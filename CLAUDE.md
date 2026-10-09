@@ -13,7 +13,6 @@ Mekan–influencer iş birliği uygulaması. Ürün kararları, roller, durum ma
 
 ## Komutlar
 
-<!-- Faz 0 iskeleti kurulduktan sonra gerçek komutlarla güncelle -->
 - Kurulum: `pnpm install`
 - Altyapı: `docker compose up -d`
 - Geliştirme: `pnpm dev`
