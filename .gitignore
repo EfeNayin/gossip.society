@@ -13,3 +13,6 @@ coverage
 *.tsbuildinfo
 apps/api/src/generated
 next-env.d.ts
+expo-env.d.ts
+/apps/mobile/ios
+/apps/mobile/android
