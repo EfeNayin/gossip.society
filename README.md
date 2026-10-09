@@ -1,40 +1,37 @@
 # Gossip Society
 
-+Gossip Society, içerik üreticileri ile mekanları buluşturan mobil öncelikli bir React prototipidir.
-+
-+## Teknoloji
-+
-+- React
-+- Vite
-+- Tailwind CSS
-+- Lucide Icons
-+
-+## Başlangıç
-+
-+```sh
-+npm install
-+npm run dev
-+```
-+
-+Üretim derlemesi:
-+
-+```sh
-+npm run build
-+npm run preview
-+```
-+
-+## Proje yapısı
-+
-+- `src/features/landing`: Açılış ekranı
-+- `src/features/influencer`: Influencer kayıt ve uygulama ekranları
-+- `src/features/venue`: Mekan paneli
-+- `src/features/admin`: Yönetici paneli
-+- `src/styles`: Tailwind ve uygulama stilleri
-+- `public/legacy-app.js`: İlk geçişte korunan mevcut etkileşim katmanı
-+
-+## Geçiş notu
-+
-+Ekran kabuğu React bileşenlerine ayrılmıştır. Mevcut prototip davranışları, geçiş sırasında özellik kaybı yaşamamak için geçici olarak `public/legacy-app.js` içinde korunur. Sonraki geliştirmelerde bu dosyadaki ekran fonksiyonları React state ve bileşenlerine taşınabilir.
-+
-+İlk tek dosyalı prototip `canl_destek_ve_ba_vuru_detaylar.html` olarak yedekte tutulur.
-+
+Mekan–influencer iş birliği uygulaması. Ürün ve teknik kararlar: [docs/PLAN.md](docs/PLAN.md). Çalışma kuralları: [CLAUDE.md](CLAUDE.md).
+
+## Yapı
+
+- `apps/api` — NestJS + Prisma (port 3000)
+- `apps/admin` — Next.js yönetim paneli (port 3001)
+- `apps/mobile` — Expo + Expo Router (port 8081)
+- `packages/shared` — Zod şemaları ve ortak tipler
+- `prototype/` — eski demo; yalnızca ekran ve akış referansı
+
+## Gereksinimler
+
+Node 24, pnpm 11, Docker.
+
+## Kurulum
+
+```sh
+cp .env.example .env
+cp apps/api/.env.example apps/api/.env
+cp apps/admin/.env.example apps/admin/.env
+cp apps/mobile/.env.example apps/mobile/.env
+
+pnpm install
+docker compose up -d
+pnpm --filter api prisma migrate dev
+pnpm dev
+```
+
+Telefonda Expo Go ile denemek için `apps/mobile/.env` içindeki `EXPO_PUBLIC_API_URL` değerine bilgisayarın yerel ağ IP'sini yaz (ör. `http://192.168.1.10:3000`); telefon ve bilgisayar aynı ağda olmalı.
+
+## Komutlar
+
+- `pnpm dev` — üç uygulamayı birlikte başlatır
+- `pnpm lint`, `pnpm typecheck`, `pnpm test`
+- `pnpm --filter api prisma migrate dev` — migration

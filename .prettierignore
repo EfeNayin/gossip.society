@@ -1,0 +1,6 @@
+prototype
+pnpm-lock.yaml
+dist
+.next
+.expo
+.turbo
