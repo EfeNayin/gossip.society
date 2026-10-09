@@ -11,7 +11,12 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "env:setup": "node scripts/setup-env.mjs",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "infra:status": "docker compose ps",
+    "db:migrate": "pnpm --filter api exec prisma migrate deploy"
   },
   "devDependencies": {
     "prettier": "^3.9.9",
