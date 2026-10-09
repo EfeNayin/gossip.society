@@ -11,3 +11,4 @@ dist
 .expo
 coverage
 *.tsbuildinfo
+apps/api/src/generated
