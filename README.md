@@ -2,6 +2,8 @@
 
 Mekan–influencer iş birliği uygulaması. Ürün ve teknik kararlar: [docs/PLAN.md](docs/PLAN.md). Çalışma kuralları: [CLAUDE.md](CLAUDE.md).
 
+Prototip ekranlarının MVP ile eşleştirilmesi ve ilk geliştirme sırası: [docs/MVP-SCREENS.md](docs/MVP-SCREENS.md).
+
 ## Şu anki durum
 
 Monorepo temeli hazırdır. Admin ve mobil uygulama şu anda API/veritabanı bağlantı durumunu gösterir; gerçek ürün ekranları henüz geliştirilmemiştir. `prototype/` tasarım ve akış referansıdır, kökteki geliştirme komutuyla açılmaz ve yeni uygulamalara kod olarak kopyalanmaz.
