@@ -3,22 +3,35 @@
 // browser. Nothing here logs request or response bodies.
 import {
   accountStatusErrorSchema,
+  adminVenueListSchema,
+  createVenueResponseSchema,
+  emailConflictErrorSchema,
   healthResponseSchema,
   loginResponseSchema,
   refreshResponseSchema,
   safeUserSchema,
   type AccountStatusErrorCode,
+  type AdminVenue,
+  type AdminVenueList,
+  type CreateVenueRequest,
   type HealthResponse,
   type LoginRequest,
   type LoginResponse,
   type SafeUser,
+  type VenueErrorCode,
 } from '@gossip/shared';
 import { getApiUrl } from './config';
 import type { SessionTokens } from './cookies';
 
 export type ApiResult<T> =
   | { kind: 'ok'; data: T }
-  | { kind: 'error'; status: number; code?: AccountStatusErrorCode }
+  | {
+      kind: 'error';
+      status: number;
+      code?: AccountStatusErrorCode;
+      // 409 of POST /admin/venues.
+      venueCode?: VenueErrorCode;
+    }
   | { kind: 'unreachable' };
 
 const TIMEOUT_MS = 8000;
@@ -54,13 +67,20 @@ async function call<T>(
 
   if (!response.ok) {
     let code: AccountStatusErrorCode | undefined;
+    let venueCode: VenueErrorCode | undefined;
+    if (response.status === 409) {
+      const parsed = emailConflictErrorSchema.safeParse(
+        await response.json().catch(() => undefined),
+      );
+      if (parsed.success) venueCode = parsed.data.code;
+    }
     if (response.status === 403) {
       const parsed = accountStatusErrorSchema.safeParse(
         await response.json().catch(() => undefined),
       );
       if (parsed.success) code = parsed.data.code;
     }
-    return { kind: 'error', status: response.status, code };
+    return { kind: 'error', status: response.status, code, venueCode };
   }
 
   try {
@@ -96,6 +116,29 @@ export const apiLogout = (accessToken: string) =>
 export const apiHealth = () =>
   call<HealthResponse>('/health', {
     parse: (json) => healthResponseSchema.parse(json),
+  });
+
+export const apiListVenues = (
+  accessToken: string,
+  { page, pageSize }: { page: number; pageSize: number },
+) =>
+  call<AdminVenueList>(`/admin/venues?page=${page}&pageSize=${pageSize}`, {
+    token: accessToken,
+    parse: (json) => adminVenueListSchema.parse(json),
+  });
+
+// The request carries the initial password to the API (server to server) and
+// is not retried or logged here: if the answer is lost the caller can't know
+// whether the venue was created.
+export const apiCreateVenue = (
+  accessToken: string,
+  request: CreateVenueRequest,
+) =>
+  call<AdminVenue>('/admin/venues', {
+    method: 'POST',
+    token: accessToken,
+    body: request,
+    parse: (json) => createVenueResponseSchema.parse(json),
   });
 
 export type RefreshOutcome =

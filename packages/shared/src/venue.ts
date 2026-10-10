@@ -21,8 +21,8 @@ const optionalText = (max: number) =>
     .string()
     .trim()
     .max(max)
-    .optional()
-    .transform((value) => (value ? value : undefined));
+    .transform((value) => (value ? value : undefined))
+    .optional();
 
 /**
  * Body of POST /admin/venues. Unknown keys (role, status, ownerId, ...) are

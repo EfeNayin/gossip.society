@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { apiLogin, apiLogout, apiMe, apiRefresh } from './api';
+import {
+  apiCreateVenue,
+  apiListVenues,
+  apiLogin,
+  apiLogout,
+  apiMe,
+  apiRefresh,
+} from './api';
 
 const user = {
   id: '5b0b8e58-3a37-4f43-9a0b-0d6a8f4f9a11',
@@ -127,6 +134,104 @@ describe('api client', () => {
     it('keeps the session when the API is unreachable', async () => {
       fetchMock.mockRejectedValue(new TypeError('fetch failed'));
       expect(await apiRefresh('old')).toEqual({ kind: 'unavailable' });
+    });
+  });
+
+  describe('venues', () => {
+    const venue = {
+      id: '5b0b8e58-3a37-4f43-9a0b-0d6a8f4f9a21',
+      name: 'Örnek Kafe',
+      description: null,
+      createdAt: '2026-10-10T12:00:00.000Z',
+      owner: {
+        id: '5b0b8e58-3a37-4f43-9a0b-0d6a8f4f9a22',
+        name: 'Ayşe',
+        email: 'ayse@kafe.example',
+        status: 'ACTIVE',
+        passwordHash: '$argon2id$should-never-matter',
+      },
+      branches: [
+        {
+          id: '5b0b8e58-3a37-4f43-9a0b-0d6a8f4f9a23',
+          name: 'K',
+          city: 'C',
+          address: 'A',
+        },
+      ],
+    };
+    const request = {
+      owner: {
+        name: 'Ayşe',
+        email: 'ayse@kafe.example',
+        password: 'initial-password-1',
+      },
+      venue: { name: 'Örnek Kafe' },
+      branch: { name: 'K', city: 'C', address: 'A' },
+    };
+
+    it('lists with the page in the query and the admin token', async () => {
+      fetchMock.mockResolvedValue(
+        json(200, {
+          items: [venue],
+          page: 2,
+          pageSize: 10,
+          total: 11,
+          totalPages: 2,
+        }),
+      );
+
+      const result = await apiListVenues('tok', { page: 2, pageSize: 10 });
+
+      expect(fetchMock.mock.calls[0]![0]).toBe(
+        'http://api.test/admin/venues?page=2&pageSize=10',
+      );
+      expect(
+        new Headers(fetchMock.mock.calls[0]![1]?.headers).get('authorization'),
+      ).toBe('Bearer tok');
+      expect(fetchMock.mock.calls[0]![1]?.cache).toBe('no-store');
+      expect(result.kind).toBe('ok');
+      // Whatever the API sends beyond the contract is dropped.
+      expect(JSON.stringify(result)).not.toContain('argon2');
+    });
+
+    it('creates with a POST body that carries the password, once, uncached', async () => {
+      fetchMock.mockResolvedValue(json(201, venue));
+
+      const result = await apiCreateVenue('tok', request);
+
+      expect(result.kind).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://api.test/admin/venues');
+      expect(init?.method).toBe('POST');
+      expect(init?.cache).toBe('no-store');
+      expect(JSON.parse(String(init?.body))).toEqual(request);
+      expect(JSON.stringify(result)).not.toContain('initial-password-1');
+      expect(JSON.stringify(result)).not.toContain('argon2');
+    });
+
+    it('surfaces the 409 e-mail conflict code', async () => {
+      fetchMock.mockResolvedValue(
+        json(409, {
+          statusCode: 409,
+          code: 'EMAIL_ALREADY_EXISTS',
+          message: 'x',
+        }),
+      );
+      expect(await apiCreateVenue('tok', request)).toEqual({
+        kind: 'error',
+        status: 409,
+        code: undefined,
+        venueCode: 'EMAIL_ALREADY_EXISTS',
+      });
+    });
+
+    it('does not retry on a network error', async () => {
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      expect(await apiCreateVenue('tok', request)).toEqual({
+        kind: 'unreachable',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 });
