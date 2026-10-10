@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -18,7 +18,7 @@ import { useSession } from '@/session/use-session';
 import { colors } from '@/theme';
 import { discoverMessages } from './discover-messages';
 import { DiscoverCard } from './discover-parts';
-import { useDiscoverList } from './use-discover';
+import { DISCOVER_STALE_MS, useDiscoverList } from './use-discover';
 
 // The influencer's home is the discovery of open offers. Read only: there is
 // no application model yet, so nothing here applies to an offer.
@@ -36,6 +36,23 @@ export function InfluencerHome() {
     });
     return () => subscription.remove();
   }, [refetch]);
+
+  // Back from a detail screen: a list that has gone stale is read again (this
+  // screen stays mounted under the detail, so nothing else would refresh it).
+  // The latest query state is read through a ref: the focus callback must not
+  // judge staleness by the render it was created in.
+  const latest = useRef(query);
+  useEffect(() => {
+    latest.current = query;
+  });
+  useFocusEffect(
+    useCallback(() => {
+      const current = latest.current;
+      const age = Date.now() - current.dataUpdatedAt;
+      if (current.data && !current.isFetching && age > DISCOVER_STALE_MS)
+        void current.refetch();
+    }, []),
+  );
 
   async function signOut() {
     if (signingOut) return;

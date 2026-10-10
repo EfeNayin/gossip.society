@@ -21,6 +21,9 @@ function useInfluencerId(): string | null {
   return status === 'signedIn' && user?.role === 'INFLUENCER' ? user.id : null;
 }
 
+// How long a loaded list counts as current.
+export const DISCOVER_STALE_MS = 15_000;
+
 function failureOf(error: unknown): DiscoverLoadFailure | null {
   return error instanceof DiscoverLoadError ? error.reason : null;
 }
@@ -46,7 +49,7 @@ export function useDiscoverList() {
     // The session manager already renews tokens and retries once after a 401; a
     // failure is shown with a retry button instead of being repeated silently.
     retry: false,
-    staleTime: 15_000,
+    staleTime: DISCOVER_STALE_MS,
   });
   const failure = failureOf(query.error);
   useRevalidateOnForbidden(failure);
