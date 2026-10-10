@@ -245,6 +245,58 @@ Admin panelinde **Mekanlar** (`/venues`, sayfalı liste) ve **Yeni Mekan** (`/ve
 
 `pnpm test` (HTTP testleri ve admin testleri) ve gerçek PostgreSQL üzerinde `pnpm --filter api test:integration` (transaction geri alma, unique kısıtı, 8 eşzamanlı aynı e-posta, e-posta yazım farkları, oluşturulan sahibin gerçek girişi, sahip yalıtımı, sayfalama; yalnızca `itest-` verileriyle) kullanılır. Admin akışı ayrıca gerçek Chrome ile üretim derlemesinde elle doğrulanmıştır (otomatik tarayıcı testi yoktur; CSRF reddi tarayıcıda değil birim testlerle doğrulanmıştır).
 
+## İlanlar, abonelik ve kota (yalnızca API)
+
+Bu aşama **yalnızca API ve ortak şemalardır**: mobil/admin ekranı, influencer keşfi, başvuru/onay, ziyaret saatleri/slotlar, QR ve ödeme yoktur. Gerçek paket fiyatları ve kota değerleri henüz belirlenmemiştir; kota değerleri veritabanındaki paket satırından okunur, kodda sabit değildir.
+
+### Durumlar ve akış
+
+`Offer` bir **şubeye** bağlıdır (mekan, dolayısıyla sahip şube üzerinden bulunur; `ownerId`/`venueId` tekrarlanmaz). Durumlar: `DRAFT` → `PUBLISHED` → `SUSPENDED`.
+
+- Mekan sahibi taslak oluşturur ve düzenler (**yalnızca `DRAFT` düzenlenebilir**), sonra ayrı **Yayınla** işlemiyle doğrudan yayınlar. Yayın öncesi admin onayı yoktur.
+- Admin yayındaki ilanı **zorunlu gerekçeyle** askıya alabilir (`PUBLISHED → SUSPENDED`); işlemi yapan admin ve zaman kaydedilir. Sahip askıdaki ilanı yeniden yayınlayamaz; admin için yeniden açma, silme veya içerik düzenleme yoktur.
+- Geçerlilik başlangıç/bitiş tarihleri vardır (UTC saklanır, `Z` veya ofsetli ISO 8601 kabul edilir). Hizmet değeri **kuruş cinsinden integer**dır (pozitif), kontenjan pozitif, minimum takipçi negatif olmayan tamsayıdır. Bu kurallar hem şemada hem veritabanında `CHECK` ile korunur.
+- İstemci `status`, `ownerId`, `venueId`, yayın/askıya alma alanları gönderse de yok sayılır.
+
+### Uç noktalar
+
+| Uç nokta | Rol | Açıklama |
+|---|---|---|
+| `POST /offers/mine` | `VENUE_OWNER` | Kendi şubelerinden birinde `DRAFT` oluşturur (`branchId` gövdede). Başkasının/olmayan şube → `404`. |
+| `GET /offers/mine?page&pageSize&status` | `VENUE_OWNER` | Kendi ilanları, yeniden eskiye, kararlı sıralı; `pageSize` ≤ 50. |
+| `GET /offers/mine/:id` | `VENUE_OWNER` | Kendi ilanı; başkasınınki `404`. |
+| `PUT /offers/mine/:id` | `VENUE_OWNER` | Taslağı düzenler (şube değişmez). `DRAFT` değilse `409 OFFER_NOT_DRAFT`. |
+| `POST /offers/mine/:id/publish` | `VENUE_OWNER` | `DRAFT → PUBLISHED`, kota kontrolüyle. |
+| `GET /admin/offers?page&pageSize&status` | `ADMIN` | Tüm ilanlar (mekan, sahip ve askıya alma bilgisiyle). |
+| `GET /admin/offers/:id` | `ADMIN` | Tek ilan. |
+| `POST /admin/offers/:id/suspend` | `ADMIN` | `{ "reason" }` zorunlu; yalnızca `PUBLISHED`. |
+
+Sahip uç noktaları `ACTIVE` `VENUE_OWNER` ister; ADMIN/INFLUENCER/VENUE_STAFF `403`. İş kuralı hataları `409` ve şu kodlarla döner: `NO_ACTIVE_SUBSCRIPTION`, `QUOTA_EXCEEDED`, `OFFER_NOT_DRAFT`, `OFFER_EXPIRED`, `OFFER_NOT_PUBLISHED`.
+
+### Abonelik ve kota kuralları
+
+- **Paket** (`SubscriptionPlan`) ve mekana bağlı dönemli **abonelik** (`Subscription`, `[başlangıç, bitiş)` UTC) veritabanında düzenlenebilir veridir; fiyat/tahsilat alanı yoktur. Paket `activeOfferQuota` (aktif ilan kotası) ve ileride kullanılacak `monthlyMatchQuota` (aylık eşleşme) taşır; **aylık eşleşme kotası bu aşamada uygulanmaz**, başvuru/onay görevine kalmıştır.
+- **Çakışma kuralı:** aynı mekanın abonelik dönemleri **çakışamaz**; bu, PostgreSQL **exclusion constraint** ile garanti edilir (`btree_gist` eklentisi gerekir; migration `CREATE EXTENSION IF NOT EXISTS btree_gist` çalıştırır, dolayısıyla migration'ı uygulayan veritabanı kullanıcısının buna yetkisi olmalıdır). Dönemler yarı açık olduğu için biri, öncekinin bittiği anda başlayabilir. Böylece bir anda en fazla bir geçerli abonelik vardır ve uygulanacak kota belirsiz kalmaz. `endsAt > startsAt` ayrıca `CHECK` ile zorunludur.
+- **Yayınlama** için mekanın **şu an geçerli** bir aboneliği olmalı (`startsAt ≤ şimdi < endsAt`); yoksa `NO_ACTIVE_SUBSCRIPTION`. Yeni oluşturulan gerçek mekanlara otomatik abonelik verilmez.
+- **Aktif ilan** = `PUBLISHED` ve `validUntil` henüz gelmemiş ilan; **gelecek başlangıç tarihli yayınlar da kotayı kullanır**. `DRAFT`, `SUSPENDED` ve süresi dolmuş ilanlar kotaya dahil değildir. Süre dolması için arka plan işi yoktur; sorgular tarihe bakar. Kota doluysa `QUOTA_EXCEEDED`. Bitişi geçmiş ilan yayınlanamaz (`OFFER_EXPIRED`).
+- **Askıya alma** ilanı `PUBLISHED` olmaktan çıkardığı için kotadan hemen düşer.
+- **Eşzamanlılık:** yayınlama tek transaction'da yapılır ve işe ilgili **mekanın satırını `SELECT … FOR UPDATE` ile kilitleyerek** başlar. Aynı mekanın yayınlama istekleri bu yüzden sırayla çalışır; ilan, abonelik ve aktif ilan sayısı kilitten **sonra** okunur ve ancak yer varsa güncellenir. Böylece son boş hak için yarışan farklı ilanlar kotayı aşamaz ("say, sonra kilitsiz güncelle" yarışı yoktur). Farklı mekanlar birbirini beklemez. Reddedilen yayın (kota dolu vb.) hiçbir şey yazmaz ve rollback ile kilidi bırakır.
+- **Tekrar yayınlama:** aynı ilan için ikinci istek, ilan zaten `PUBLISHED` ise `200` ile ilanı **değişmeden** döndürür (yayın zamanı değişmez) ve ikinci bir kota tüketmez; `SUSPENDED` ilan için `409`.
+
+### Geliştirme verisi (isteğe bağlı)
+
+Aboneliği yönetecek bir uç nokta yoktur; yayınlamayı yerelde denemek için örnek bir paket/abonelik hazırlayan, **yalnızca geliştirme** amaçlı bir komut vardır (Mac Terminal ve Windows PowerShell'de aynı; `pnpm db:seed:dev` sonrasında):
+
+```sh
+pnpm db:subscription:dev
+```
+
+"Örnek Geliştirme Paketi"ni (aktif ilan kotası 3, aylık eşleşme 10; **bu sayılar uydurmadır, gerçek ürün kararı değildir**) oluşturur ve yalnızca seed'deki örnek mekâna 90 günlük abonelik verir. Eksik olanı oluşturur; aynı adlı mevcut paketi ve mekânın mevcut aboneliğini **değiştirmez**. `NODE_ENV=production` iken çalışmayı reddeder, CI/deployment'a bağlı değildir.
+
+### Doğrulama
+
+`pnpm test` (HTTP testleri: rol/sahiplik, istemciden durum/kimlik gönderme, abonelik yok/bitmiş/başlamamış, kota dolu, gelecek başlangıçlı ve süresi dolmuş ilanlar, tekrar yayınlama, askıya alma sonrası kota) ve gerçek PostgreSQL üzerinde `pnpm --filter api test:integration` (aynı mekan için 8 eşzamanlı aynı ilan yayını → kota bir kez; farklı ilanların son haklar için yarışı → kota aşılmaz; abonelik çakışma kısıtı; `CHECK` kısıtları; rollback sonrası kilidin bırakılması). Kilit satırı kaldırıldığında yarış testleri kırılır.
+
 ## Mobil uygulama girişi
 
 Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile girer ve **API'nin döndürdüğü kullanıcı kaydındaki role göre** sade bir ana ekran açar: `INFLUENCER`, `VENUE_OWNER`, `VENUE_STAFF`. Ekranlarda yalnızca ad, rol ve çıkış vardır (sahte ilan/istatistik/QR yok). `ADMIN` mobilde yetkili alan açmaz: giriş hemen `POST /auth/logout` ile iptal edilir, hiçbir şey saklanmaz ve "yönetim paneli web üzerinden kullanılır" mesajı gösterilir. Gezinti korumaları (`Stack.Protected`) yalnızca arayüzdür; her isteği API kendi yetki kontrolleriyle denetler. Geliştirme hesapları için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `owner@`, `staff@`, `influencer@gossip-society.example` kullanılabilir.
