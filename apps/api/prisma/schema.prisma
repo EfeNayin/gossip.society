@@ -153,7 +153,8 @@ model SubscriptionPlan {
   name              String         @unique
   // Offers a venue may have PUBLISHED and not yet expired at the same time.
   activeOfferQuota  Int
-  // Reserved for the application/approval task; not enforced anywhere yet.
+  // Approvals a venue may make per Europe/Istanbul calendar month (all its
+  // offers and branches together), counted by Collaboration.approvedAt.
   monthlyMatchQuota Int
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
