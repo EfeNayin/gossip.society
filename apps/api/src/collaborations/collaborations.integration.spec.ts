@@ -572,6 +572,22 @@ describe('collaborations against PostgreSQL', () => {
       );
     });
 
+    it('an approval at 00:00 Istanbul on the 1st (still 30 September in UTC) already counts for October', async () => {
+      const venue = await monthVenue(1);
+      await approvedAt(venue, ['2026-09-30T21:00:00.000Z']);
+      const a = await applied('infX', (await venue.offer()).id);
+      expect(await code(await decide('ownerA', a.id, 'approve'))).toBe(
+        'MONTHLY_QUOTA_EXCEEDED',
+      );
+    });
+
+    it('an approval at 00:00 Istanbul on 1 November (still 31 October in UTC) does not count for October', async () => {
+      const venue = await monthVenue(1);
+      await approvedAt(venue, ['2026-10-31T21:00:00.000Z']);
+      const a = await applied('infX', (await venue.offer()).id);
+      expect((await decide('ownerA', a.id, 'approve')).status).toBe(200);
+    });
+
     it('the next month starts with a new count', async () => {
       const venue = await monthVenue(1);
       await approvedAt(venue, ['2026-10-20T09:00:00.000Z']);
