@@ -1,4 +1,5 @@
 import type { OfferErrorCode } from '@gossip/shared';
+import type { WriteOutcome } from './offers-query';
 
 // User-facing texts are Turkish.
 export const offerErrorMessages: Record<OfferErrorCode, string> = {
@@ -24,3 +25,23 @@ export const offerMessages = {
   unreachable:
     'Sunucuya ulaşılamıyor. Bağlantınızı kontrol edip tekrar deneyin.',
 } as const;
+
+/** The Turkish text for a write that did not succeed; undefined when there is nothing to show. */
+export function writeFailureMessage(outcome: WriteOutcome): string | undefined {
+  switch (outcome.kind) {
+    case 'conflict':
+      return offerErrorMessages[outcome.code];
+    case 'not-found':
+      return offerMessages.notFound;
+    case 'invalid':
+      return offerMessages.invalid;
+    case 'forbidden':
+      return offerMessages.forbidden;
+    case 'unknown':
+      return offerMessages.unknownOutcome;
+    case 'ok':
+    case 'ended':
+    case 'stale':
+      return undefined;
+  }
+}

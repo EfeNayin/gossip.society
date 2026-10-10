@@ -204,3 +204,29 @@ export function sameFormValues(
     (key) => a[key].trim() === b[key].trim(),
   );
 }
+
+/**
+ * True when the typed values already describe exactly what the offer holds
+ * (compared by meaning, not by text: "1250.5" equals 125050 kuruş). Used to
+ * tell unsaved edits apart, and to see after a lost answer whether an edit
+ * reached the server.
+ */
+export function matchesOffer(
+  values: OfferFormValues,
+  offer: OwnerOffer,
+): boolean {
+  const parsed = parseOfferForm(values, offer.branch.id);
+  if (!parsed.ok) return false;
+  const r = parsed.request;
+  return (
+    r.title === offer.title &&
+    r.description === offer.description &&
+    r.serviceDescription === offer.serviceDescription &&
+    r.serviceValueKurus === offer.serviceValueKurus &&
+    r.expectedContent === offer.expectedContent &&
+    r.minFollowers === offer.minFollowers &&
+    r.capacity === offer.capacity &&
+    Date.parse(r.validFrom) === Date.parse(offer.validFrom) &&
+    Date.parse(r.validUntil) === Date.parse(offer.validUntil)
+  );
+}

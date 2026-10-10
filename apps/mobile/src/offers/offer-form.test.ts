@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   emptyOfferForm,
+  matchesOffer,
   offerFieldMessages,
   offerToFormValues,
   parseOfferForm,
@@ -252,5 +253,55 @@ describe('editing an existing offer', () => {
       sameFormValues(values, { ...values, title: '  ' + values.title + ' ' }),
     ).toBe(true);
     expect(sameFormValues(values, { ...values, capacity: '5' })).toBe(false);
+  });
+});
+
+describe('matchesOffer', () => {
+  const offer = {
+    id: '00000000-0000-4000-8000-000000000001',
+    branch: { id: BRANCH, name: 'Kadıköy', city: 'İstanbul' },
+    venue: { id: '00000000-0000-4000-8000-000000000002', name: 'Kafe' },
+    title: 'Akşam yemeği',
+    description: 'İki kişilik akşam yemeği daveti',
+    serviceDescription: 'İki kişilik tadım menüsü',
+    serviceValueKurus: 250_050,
+    expectedContent: 'Bir reels videosu ve üç story',
+    minFollowers: 5000,
+    capacity: 4,
+    validFrom: '2026-11-01T06:00:00.000Z',
+    validUntil: '2026-12-01T06:00:00.000Z',
+    status: 'DRAFT' as const,
+    publishedAt: null,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    suspension: null,
+  };
+
+  it('is true for values that mean the same thing, however they were typed', () => {
+    expect(matchesOffer(valid, offer)).toBe(true);
+    expect(
+      matchesOffer(
+        { ...valid, serviceValueTl: '2500.5', title: '  Akşam yemeği ' },
+        offer,
+      ),
+    ).toBe(true);
+    expect(matchesOffer(offerToFormValues(offer), offer)).toBe(true);
+  });
+
+  it.each([
+    ['title', { title: 'Başka' }],
+    ['money', { serviceValueTl: '2500,51' }],
+    ['capacity', { capacity: '5' }],
+    ['followers', { minFollowers: '5001' }],
+    ['start', { validFrom: '01.11.2026 09:01' }],
+    ['end', { validUntil: '02.12.2026 09:00' }],
+  ])('is false when %s differs', (_name, change) => {
+    expect(matchesOffer({ ...valid, ...change }, offer)).toBe(false);
+  });
+
+  it('is false for values that do not parse', () => {
+    expect(matchesOffer({ ...valid, serviceValueTl: 'abc' }, offer)).toBe(
+      false,
+    );
   });
 });
