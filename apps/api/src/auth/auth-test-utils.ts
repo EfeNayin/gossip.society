@@ -63,6 +63,38 @@ export interface FakeIdempotencyKey {
   expiresAt: Date;
 }
 
+export interface FakeCollaboration {
+  id: string;
+  offerId: string;
+  influencerId: string;
+  venueId: string;
+  status: 'APPLIED' | 'APPROVED' | 'REJECTED';
+  appliedAt: Date;
+  termsAcceptedAt: Date;
+  termsSnapshot: unknown;
+  decidedAt: Date | null;
+  decidedById: string | null;
+  approvedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FakeCollaborationEvent {
+  id: string;
+  collaborationId: string;
+  fromStatus: FakeCollaboration['status'] | null;
+  toStatus: FakeCollaboration['status'];
+  actorId: string;
+  createdAt: Date;
+}
+
+export interface FakeProfile {
+  userId: string;
+  city: string;
+  bio: string | null;
+  instagramUsername: string | null;
+}
+
 export interface FakeVenue {
   id: string;
   name: string;
@@ -179,7 +211,18 @@ export function createFakePrisma() {
   let clock = Date.UTC(2026, 9, 10, 12, 0, 0);
   const tick = () => new Date((clock += 1000));
   // Tests set this to make the next venue insert fail (after the user insert).
-  const failures: { venueCreate?: Error; idempotencyKeyCreate?: Error } = {};
+  const failures: {
+    venueCreate?: Error;
+    idempotencyKeyCreate?: Error;
+    // Makes the history insert of a matching entry fail (after the row was written).
+    eventCreate?: (entry: {
+      toStatus: string;
+      actorId: string;
+    }) => Error | undefined;
+  } = {};
+  const collaborations = new Map<string, FakeCollaboration>();
+  const collaborationEvents = new Map<string, FakeCollaborationEvent>();
+  const profiles = new Map<string, FakeProfile>();
   const offers = new Map<string, FakeOffer>();
   const idempotencyKeys = new Map<string, FakeIdempotencyKey>();
   const plans = new Map<string, FakePlan>();
@@ -204,6 +247,39 @@ export function createFakePrisma() {
       }
       return matches(offer, { [key]: cond });
     });
+  // Collaborations: filters on the flat fields, { gte, lt, not }, and the
+  // venue relation (the owner scoping of the venue owner's inbox).
+  const collaborationMatches = (c: FakeCollaboration, where: Where = {}) =>
+    Object.entries(where).every(([key, cond]) => {
+      if (key === 'venue') {
+        const venue = venues.get(c.venueId);
+        return !!venue && matches(venue, cond as Where);
+      }
+      return matches(c, { [key]: cond });
+    });
+  // A superset of what the service's includes ask for (the response schemas
+  // strip the rest, like they strip the real columns that are not selected).
+  const collaborationView = (c: FakeCollaboration) => {
+    const offer = offers.get(c.offerId)!;
+    const branch = branches.get(offer.branchId)!;
+    const venue = venues.get(branch.venueId)!;
+    return {
+      ...c,
+      events: [...collaborationEvents.values()]
+        .filter((e) => e.collaborationId === c.id)
+        .sort(
+          (a, b) =>
+            a.createdAt.getTime() - b.createdAt.getTime() ||
+            a.id.localeCompare(b.id),
+        ),
+      offer: { ...offer, branch: { ...branch, venue } },
+      influencer: {
+        ...users.get(c.influencerId)!,
+        influencerProfile: profiles.get(c.influencerId) ?? null,
+      },
+    };
+  };
+
   const offerView = (offer: FakeOffer, include?: unknown) => {
     if (!include) return offer;
     const branch = branches.get(offer.branchId)!;
@@ -260,6 +336,12 @@ export function createFakePrisma() {
       users: [...users].map(([id, row]) => [id, { ...row }] as const),
       venues: [...venues].map(([id, row]) => [id, { ...row }] as const),
       offers: [...offers].map(([id, row]) => [id, { ...row }] as const),
+      collaborations: [...collaborations].map(
+        ([id, row]) => [id, { ...row }] as const,
+      ),
+      collaborationEvents: [...collaborationEvents].map(
+        ([id, row]) => [id, { ...row }] as const,
+      ),
       idempotencyKeys: [...idempotencyKeys].map(
         ([id, row]) => [id, { ...row }] as const,
       ),
@@ -278,6 +360,12 @@ export function createFakePrisma() {
       for (const [id, row] of snapshot.venues) venues.set(id, row);
       offers.clear();
       for (const [id, row] of snapshot.offers) offers.set(id, row);
+      collaborations.clear();
+      for (const [id, row] of snapshot.collaborations)
+        collaborations.set(id, row);
+      collaborationEvents.clear();
+      for (const [id, row] of snapshot.collaborationEvents)
+        collaborationEvents.set(id, row);
       idempotencyKeys.clear();
       for (const [id, row] of snapshot.idempotencyKeys)
         idempotencyKeys.set(id, row);
@@ -294,6 +382,8 @@ export function createFakePrisma() {
 
   const models = {
     user: {
+      findFirst: async ({ where }: { where: Where }) =>
+        [...users.values()].find((u) => matches(u, where)) ?? null,
       findUnique: async ({
         where,
       }: {
@@ -564,6 +654,104 @@ export function createFakePrisma() {
         return offerView(offer, include);
       },
     },
+    collaboration: {
+      create: async ({
+        data,
+      }: {
+        data: Omit<
+          FakeCollaboration,
+          | 'id'
+          | 'status'
+          | 'decidedAt'
+          | 'decidedById'
+          | 'approvedAt'
+          | 'createdAt'
+          | 'updatedAt'
+        >;
+      }) => {
+        // The unique index (offerId, influencerId): Prisma's P2002.
+        if (
+          [...collaborations.values()].some(
+            (c) =>
+              c.offerId === data.offerId &&
+              c.influencerId === data.influencerId,
+          )
+        )
+          throw Object.assign(new Error('Unique'), { code: 'P2002' });
+        const row: FakeCollaboration = {
+          id: randomUUID(),
+          status: 'APPLIED',
+          decidedAt: null,
+          decidedById: null,
+          approvedAt: null,
+          createdAt: tick(),
+          updatedAt: tick(),
+          ...data,
+        };
+        collaborations.set(row.id, row);
+        return row;
+      },
+      findFirst: async ({ where }: { where: Where }) => {
+        const found = [...collaborations.values()].find((c) =>
+          collaborationMatches(c, where),
+        );
+        return found ? collaborationView(found) : null;
+      },
+      findMany: async ({
+        where,
+        orderBy,
+        skip = 0,
+        take,
+      }: {
+        where?: Where;
+        orderBy?: OrderBy;
+        skip?: number;
+        take?: number;
+      }) =>
+        sortRows(
+          [...collaborations.values()].filter((c) =>
+            collaborationMatches(c, where),
+          ),
+          orderBy,
+        )
+          .slice(skip, take === undefined ? undefined : skip + take)
+          .map(collaborationView),
+      count: async ({ where }: { where?: Where } = {}) =>
+        [...collaborations.values()].filter((c) =>
+          collaborationMatches(c, where),
+        ).length,
+      update: async ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: Partial<FakeCollaboration>;
+      }) => {
+        const row = collaborations.get(where.id);
+        if (!row) throw new Error('Not found');
+        Object.assign(row, data, { updatedAt: tick() });
+        return collaborationView(row);
+      },
+    },
+    collaborationEvent: {
+      create: async ({
+        data,
+      }: {
+        data: Omit<FakeCollaborationEvent, 'id' | 'createdAt'> & {
+          createdAt?: Date;
+        };
+      }) => {
+        const failure = failures.eventCreate?.(data);
+        if (failure) throw failure;
+        const row: FakeCollaborationEvent = {
+          id: randomUUID(),
+          createdAt: tick(),
+          ...data,
+        };
+        collaborationEvents.set(row.id, row);
+        return row;
+      },
+    },
     idempotencyKey: {
       // The unique index (userId, operation, key): a duplicate is Prisma's
       // P2002, which in PostgreSQL also aborts the transaction.
@@ -619,6 +807,9 @@ export function createFakePrisma() {
     venues,
     branches,
     offers,
+    collaborations,
+    collaborationEvents,
+    profiles,
     idempotencyKeys,
     plans,
     subscriptions,
