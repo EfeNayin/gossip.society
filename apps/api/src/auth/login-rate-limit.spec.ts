@@ -19,6 +19,7 @@ describe('login rate limit', () => {
     // The limit is read from the environment when the modules load, so reload
     // them with a small limit; this also proves the env setting is wired up.
     vi.stubEnv('LOGIN_RATE_LIMIT', String(LIMIT));
+    vi.stubEnv('REFRESH_RATE_LIMIT', String(LIMIT));
     vi.resetModules();
     const { createFakePrisma, createTestApp, makeUser } =
       await import('./auth-test-utils.js');
@@ -48,6 +49,21 @@ describe('login rate limit', () => {
     expect(blocked.status).toBe(429);
     expect(JSON.stringify(await blocked.json())).toContain('Çok fazla deneme');
     expect((await login('wrong')).status).toBe(429);
+  });
+
+  it('rate limits POST /auth/refresh by its own setting', async () => {
+    const refresh = () =>
+      fetch(`${baseUrl}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refreshToken: 'unknown-token' }),
+      });
+    for (let attempt = 0; attempt < LIMIT; attempt++) {
+      expect((await refresh()).status).toBe(401);
+    }
+    expect((await refresh()).status).toBe(429);
+    // Login keeps its own counter.
+    expect((await login('wrong')).status).toBe(401);
   });
 
   it('does not limit other routes', async () => {

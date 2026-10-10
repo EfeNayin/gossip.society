@@ -15,16 +15,20 @@ import { IS_PUBLIC_KEY } from './public.decorator.js';
 
 // jsonwebtoken only checks `exp` when it is present, so require it here: a
 // token that never expires must not be accepted. The library still enforces
-// the expiry itself.
+// the expiry itself. Tokens without `sid` (issued before sessions existed) fail
+// this schema and need a new login.
 const tokenPayloadSchema = z.object({
   sub: z.guid(),
+  sid: z.guid(),
   exp: z.number().int().positive(),
 });
 
 /**
  * Global guard: every route needs a valid Bearer access token unless it is
- * marked @Public(). The user and role are reloaded from the database on every
- * request, so suspensions and role changes apply immediately.
+ * marked @Public(). The session and the user (status, role) are reloaded from
+ * the database on every request, so logout, suspensions and role changes apply
+ * immediately. Refresh tokens are opaque strings, not JWTs, so they fail the
+ * signature check here.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -45,21 +49,32 @@ export class AuthGuard implements CanActivate {
     const token = extractBearerToken(request.headers.authorization);
     if (!token) throw invalidSession();
 
-    let userId: string;
+    let claims: z.infer<typeof tokenPayloadSchema>;
     try {
       const payload: unknown = await this.jwt.verifyAsync(token, {
         algorithms: ['HS256'],
       });
-      userId = tokenPayloadSchema.parse(payload).sub;
+      claims = tokenPayloadSchema.parse(payload);
     } catch {
       throw invalidSession();
     }
 
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw invalidSession();
-    assertAccountActive(user);
+    const session = await this.prisma.authSession.findUnique({
+      where: { id: claims.sid },
+      include: { user: true },
+    });
+    if (
+      !session ||
+      session.userId !== claims.sub ||
+      session.revokedAt !== null ||
+      session.expiresAt.getTime() <= Date.now()
+    ) {
+      throw invalidSession();
+    }
+    assertAccountActive(session.user);
 
-    request.user = safeUserSchema.parse(user);
+    request.user = safeUserSchema.parse(session.user);
+    request.sessionId = session.id;
     return true;
   }
 }

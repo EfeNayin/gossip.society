@@ -8,6 +8,7 @@ import {
 } from '@gossip/shared';
 import {
   createFakePrisma,
+  createSessionWithToken,
   createTestApp,
   makeUser,
   type FakeUser,
@@ -27,6 +28,7 @@ describe('auth over HTTP', () => {
   let app: INestApplication;
   let baseUrl: string;
   let jwt: JwtService;
+  let fake: ReturnType<typeof createFakePrisma>;
   let users: Map<string, FakeUser>;
   let passwordHash: string;
 
@@ -51,14 +53,18 @@ describe('auth over HTTP', () => {
     });
   }
 
-  const tokenFor = (id: string) => jwt.signAsync({}, { subject: id });
+  // A live session in the fake database plus a matching signed access token.
+  const tokenFor = async (id: string) =>
+    (await createSessionWithToken(fake, jwt, id)).accessToken;
+
+  const inFifteenMinutes = () => Math.floor(Date.now() / 1000) + 900;
 
   beforeAll(async () => {
     passwordHash = await hash(PASSWORD);
   });
 
   beforeEach(async () => {
-    const fake = createFakePrisma();
+    fake = createFakePrisma();
     users = fake.users;
     for (const user of [
       makeUser({ id: ids.admin, role: 'ADMIN', passwordHash }),
@@ -113,12 +119,15 @@ describe('auth over HTTP', () => {
       const { accessToken } = loginResponseSchema.parse(await res.json());
       const claims = jwt.decode<{
         sub: string;
+        sid: string;
         exp: number;
         iat: number;
         role?: string;
       }>(accessToken);
       expect(claims.sub).toBe(ids.admin);
-      expect(claims.exp - claims.iat).toBe(900);
+      expect([...fake.sessions.keys()]).toEqual([claims.sid]);
+      expect(claims.exp - claims.iat).toBeGreaterThanOrEqual(899);
+      expect(claims.exp - claims.iat).toBeLessThanOrEqual(900);
       // The role is looked up in the database, never carried in the token.
       expect(claims.role).toBeUndefined();
     });
@@ -227,25 +236,31 @@ describe('auth over HTTP', () => {
     });
 
     it('rejects an expired token', async () => {
+      const { session } = await createSessionWithToken(fake, jwt, ids.admin);
       const expired = await jwt.signAsync(
-        {},
-        { subject: ids.admin, expiresIn: -10 },
+        { sid: session.id, exp: Math.floor(Date.now() / 1000) - 10 },
+        { subject: ids.admin },
       );
       expect((await get('/auth/me', expired)).status).toBe(401);
     });
 
     it('rejects a token signed with another secret', async () => {
+      const { session } = await createSessionWithToken(fake, jwt, ids.admin);
       const forged = await new JwtService({
         secret: 'another-secret-another-secret-123456',
-      }).signAsync({}, { subject: ids.admin });
+      }).signAsync(
+        { sid: session.id, exp: inFifteenMinutes() },
+        { subject: ids.admin },
+      );
       expect((await get('/auth/me', forged)).status).toBe(401);
     });
 
     it('rejects a correctly signed token that has no exp', async () => {
-      // A JwtService without signOptions.expiresIn signs tokens with no exp.
+      // A JwtService without an expiry setting signs tokens with no exp.
+      const { session } = await createSessionWithToken(fake, jwt, ids.admin);
       const neverExpires = await new JwtService({
         secret: process.env.JWT_SECRET,
-      }).signAsync({}, { subject: ids.admin });
+      }).signAsync({ sid: session.id }, { subject: ids.admin });
       expect(jwt.decode<{ exp?: number }>(neverExpires).exp).toBeUndefined();
       expect((await get('/auth/me', neverExpires)).status).toBe(401);
     });
@@ -258,7 +273,11 @@ describe('auth over HTTP', () => {
     });
 
     it('rejects a token whose subject is not a valid id', async () => {
-      const bad = await jwt.signAsync({}, { subject: 'not-a-uuid' });
+      const { session } = await createSessionWithToken(fake, jwt, ids.admin);
+      const bad = await jwt.signAsync(
+        { sid: session.id, exp: inFifteenMinutes() },
+        { subject: 'not-a-uuid' },
+      );
       expect((await get('/auth/me', bad)).status).toBe(401);
     });
 
@@ -311,8 +330,13 @@ describe('auth over HTTP', () => {
     });
 
     it('ignores a role claim inside a validly signed token', async () => {
+      const { session } = await createSessionWithToken(
+        fake,
+        jwt,
+        ids.influencer,
+      );
       const token = await jwt.signAsync(
-        { role: 'ADMIN' },
+        { role: 'ADMIN', sid: session.id, exp: inFifteenMinutes() },
         { subject: ids.influencer },
       );
       expect((await get('/probe/admin', token)).status).toBe(403);

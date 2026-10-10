@@ -14,7 +14,8 @@ import { RolesGuard } from './roles.guard.js';
       secret: env.JWT_SECRET,
       signOptions: {
         algorithm: 'HS256',
-        expiresIn: env.JWT_ACCESS_TTL_SECONDS,
+        // No default expiry on purpose: AuthService always sets `exp` itself so
+        // it can cap it at the session's absolute expiry.
       },
     }),
     // Not a global guard: only routes that add ThrottlerGuard are limited.
