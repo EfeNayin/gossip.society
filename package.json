@@ -18,7 +18,8 @@
     "infra:status": "docker compose ps",
     "db:migrate": "pnpm --filter api exec prisma migrate deploy",
     "db:seed:dev": "pnpm --filter api db:seed:dev",
-    "db:passwords:dev": "pnpm --filter api db:passwords:dev"
+    "db:passwords:dev": "pnpm --filter api db:passwords:dev",
+    "db:subscription:dev": "pnpm --filter api db:subscription:dev"
   },
   "devDependencies": {
     "prettier": "^3.9.9",

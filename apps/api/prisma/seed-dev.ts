@@ -4,7 +4,7 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, UserRole } from '../src/generated/prisma/client.js';
 import { databaseUrl } from './dev-database-url.js';
-import { seedUsers as users } from './seed-users.js';
+import { SEED_VENUE_ID as VENUE_ID, seedUsers as users } from './seed-users.js';
 
 if (process.env.NODE_ENV === 'production') {
   throw new Error(
@@ -13,10 +13,8 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // Fixed ids let re-runs find the venue and branches without extra unique keys.
-const VENUE_ID = '00000000-0000-4000-8000-000000000101';
 const BRANCH_KADIKOY_ID = '00000000-0000-4000-8000-000000000201';
 const BRANCH_BESIKTAS_ID = '00000000-0000-4000-8000-000000000202';
-
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: databaseUrl }),
