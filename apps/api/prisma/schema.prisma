@@ -7,3 +7,95 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// Keep these enum values in sync with userRoleSchema / userStatusSchema in
+// packages/shared (src/user/enum-parity.spec.ts fails when they drift).
+enum UserRole {
+  ADMIN
+  VENUE_OWNER
+  VENUE_STAFF
+  INFLUENCER
+}
+
+enum UserStatus {
+  ACTIVE
+  PENDING
+  SUSPENDED
+}
+
+// Rules the database does NOT enforce (the services/guards that will own them
+// are not built yet, so nothing checks them today):
+// - role consistency: only INFLUENCER users should have an InfluencerProfile,
+//   only VENUE_OWNER users should own a Venue, and only VENUE_STAFF users
+//   should have VenueStaff rows;
+// - an INFLUENCER user is not guaranteed to have a profile;
+// - emails are unique, and a CHECK constraint (added by hand in the migration)
+//   requires them to be lowercase, so callers must normalize before writing.
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  name         String
+  // Nullable until the auth task; seed users keep it null.
+  passwordHash String?
+  role         UserRole
+  status       UserStatus @default(PENDING)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  influencerProfile InfluencerProfile?
+  ownedVenues       Venue[]
+  venueStaff        VenueStaff[]
+}
+
+model InfluencerProfile {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @unique @db.Uuid
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city              String
+  bio               String?
+  // Self-reported handle; not verified until the Instagram integration.
+  instagramUsername String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Venue {
+  id          String        @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  // Exactly one owner per venue for now; one owner may manage many venues.
+  ownerId     String        @db.Uuid
+  owner       User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  branches    VenueBranch[]
+
+  @@index([ownerId])
+}
+
+// No location column yet: geographic search and map indexes come later.
+model VenueBranch {
+  id        String       @id @default(uuid()) @db.Uuid
+  venueId   String       @db.Uuid
+  venue     Venue        @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  name      String
+  city      String
+  address   String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  staff     VenueStaff[]
+
+  @@index([venueId])
+}
+
+model VenueStaff {
+  id        String      @id @default(uuid()) @db.Uuid
+  userId    String      @db.Uuid
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId  String      @db.Uuid
+  branch    VenueBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@unique([userId, branchId])
+  @@index([branchId])
+}

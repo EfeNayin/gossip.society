@@ -16,7 +16,8 @@
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down",
     "infra:status": "docker compose ps",
-    "db:migrate": "pnpm --filter api exec prisma migrate deploy"
+    "db:migrate": "pnpm --filter api exec prisma migrate deploy",
+    "db:seed:dev": "pnpm --filter api db:seed:dev"
   },
   "devDependencies": {
     "prettier": "^3.9.9",

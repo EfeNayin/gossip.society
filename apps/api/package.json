@@ -10,7 +10,8 @@
     "start": "node dist/main",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:seed:dev": "tsc -p tsconfig.seed.json && node dist/seed/prisma/seed-dev.js"
   },
   "dependencies": {
     "@gossip/shared": "workspace:*",
