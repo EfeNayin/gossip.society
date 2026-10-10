@@ -99,6 +99,16 @@ const dates = ({
   validUntil: string;
 }) => ({ validFrom: new Date(validFrom), validUntil: new Date(validUntil) });
 
+/**
+ * Locking. Everything that changes a draft or counts toward a venue's quota
+ * (publish, edit) takes ONE lock first: the venue's row, FOR UPDATE, inside its
+ * transaction. They therefore run one after another per venue, and each decides
+ * on data read after the lock. Order: venue row first, then offer rows. No
+ * transaction takes a second venue lock or an offer row before the venue, so
+ * there is no cycle and no deadlock. Suspending (admin) is a single conditional
+ * UPDATE of one offer row and takes no venue lock, so it can't take part in a
+ * cycle either: it only ever waits for a row, never holds one while waiting.
+ */
 @Injectable()
 export class OffersService {
   constructor(private readonly prisma: PrismaService) {}
@@ -160,22 +170,36 @@ export class OffersService {
     return toOwnerOffer(row);
   }
 
-  /** Edits a DRAFT. The status check is part of the UPDATE, so it can't race a publish. */
+  /**
+   * Edits a DRAFT, under the same venue lock as publish() (see "Locking" in
+   * the class comment): a draft can't change between the moment a publish has
+   * validated it and the moment it publishes it. Ownership and status are
+   * checked on the data read after the lock is held.
+   */
   async updateDraft(
     ownerId: string,
     id: string,
     fields: UpdateOfferRequest,
   ): Promise<OwnerOffer> {
-    const { count } = await this.prisma.offer.updateMany({
-      where: { id, status: 'DRAFT', branch: { venue: { ownerId } } },
-      data: { ...fields, ...dates(fields) },
+    const row = await this.prisma.$transaction(async (tx) => {
+      const venueId = await this.ownedOfferVenueId(tx, ownerId, id);
+      await this.lockVenue(tx, venueId);
+
+      // Read again, now that this request holds the lock.
+      const current = await tx.offer.findFirst({
+        where: { id, branch: { venue: { ownerId } } },
+        select: { status: true },
+      });
+      if (!current) throw offerNotFound();
+      if (current.status !== 'DRAFT') throw offerConflict('OFFER_NOT_DRAFT');
+
+      return tx.offer.update({
+        where: { id },
+        data: { ...fields, ...dates(fields) },
+        include: ownerInclude,
+      });
     });
-    if (count === 0) {
-      // Not found / not yours, or no longer a draft.
-      await this.getMine(ownerId, id);
-      throw offerConflict('OFFER_NOT_DRAFT');
-    }
-    return this.getMine(ownerId, id);
+    return toOwnerOffer(row);
   }
 
   /**
@@ -188,24 +212,23 @@ export class OffersService {
    * last free slot can never both see it free. Publishing the same offer twice
    * is harmless: the second request waits for the lock, finds it PUBLISHED and
    * returns it unchanged, without using the quota again.
+   *
+   * The clock is read after the lock wait too: a request that waited for the
+   * lock must judge the subscription, the offer's validity and the quota by the
+   * time it actually decides, not by the time it arrived.
    */
   async publish(ownerId: string, id: string): Promise<OwnerOffer> {
-    const now = new Date();
     const row = await this.prisma.$transaction(async (tx) => {
-      const found = await tx.offer.findFirst({
+      const venueId = await this.ownedOfferVenueId(tx, ownerId, id);
+      await this.lockVenue(tx, venueId);
+
+      // From here on everything is read after the lock, with one clock reading.
+      const now = new Date();
+      const offer = await tx.offer.findFirst({
         where: { id, branch: { venue: { ownerId } } },
-        select: { branch: { select: { venueId: true } } },
-      });
-      if (!found) throw offerNotFound();
-      const { venueId } = found.branch;
-
-      await tx.$queryRaw`SELECT id FROM "Venue" WHERE id = ${venueId}::uuid FOR UPDATE`;
-
-      // Read again, now that this request holds the lock.
-      const offer = await tx.offer.findUniqueOrThrow({
-        where: { id },
         include: ownerInclude,
       });
+      if (!offer) throw offerNotFound();
       if (offer.status === 'PUBLISHED') return offer;
       if (offer.status !== 'DRAFT') throw offerConflict('OFFER_NOT_DRAFT');
       if (offer.validUntil <= now) throw offerConflict('OFFER_EXPIRED');
@@ -236,6 +259,29 @@ export class OffersService {
       });
     });
     return toOwnerOffer(row);
+  }
+
+  // The venue of an offer the caller owns (404 otherwise). Read BEFORE the lock
+  // only to know which row to lock; ownership is checked again after it. A
+  // branch never changes venue, so the id can't go stale.
+  private async ownedOfferVenueId(
+    tx: Pick<PrismaService, 'offer'>,
+    ownerId: string,
+    id: string,
+  ): Promise<string> {
+    const found = await tx.offer.findFirst({
+      where: { id, branch: { venue: { ownerId } } },
+      select: { branch: { select: { venueId: true } } },
+    });
+    if (!found) throw offerNotFound();
+    return found.branch.venueId;
+  }
+
+  private async lockVenue(
+    tx: Pick<PrismaService, '$queryRaw'>,
+    venueId: string,
+  ): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM "Venue" WHERE id = ${venueId}::uuid FOR UPDATE`;
   }
 
   // --- admin ---------------------------------------------------------------
