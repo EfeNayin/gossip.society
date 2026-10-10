@@ -85,9 +85,26 @@ const isUniqueViolation = (error: unknown): boolean =>
   error !== null &&
   (error as { code?: unknown }).code === 'P2002';
 
+type HistoryRow = { fromStatus: unknown; createdAt: Date };
+
+/**
+ * The history in the order things happened. The query sorts by time, then by id
+ * (a random UUID), which is no order at all when two entries carry the same
+ * time: a decision could come before the application it decides. The creation
+ * is the only entry without a previous status, so on equal times it goes first;
+ * the order of everything else is kept (the sort is stable).
+ */
+function orderHistory<T extends HistoryRow>(events: T[]): T[] {
+  return [...events].sort(
+    (a, b) =>
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      Number(a.fromStatus !== null) - Number(b.fromStatus !== null),
+  );
+}
+
 function toMine(row: {
   termsSnapshot: unknown;
-  events: unknown;
+  events: HistoryRow[];
   offer: { branch: { venue: unknown } & Record<string, unknown> };
 }): MyCollaboration {
   const { branch } = row.offer;
@@ -95,13 +112,13 @@ function toMine(row: {
     ...row,
     terms: row.termsSnapshot,
     offer: { ...row.offer, venue: branch.venue, branch },
-    history: row.events,
+    history: orderHistory(row.events),
   });
 }
 
 function toReceived(row: {
   termsSnapshot: unknown;
-  events: unknown;
+  events: HistoryRow[];
   influencer: { name: string; influencerProfile: unknown };
 }): ReceivedCollaboration {
   return receivedCollaborationSchema.parse({
@@ -111,7 +128,7 @@ function toReceived(row: {
       name: row.influencer.name,
       profile: row.influencer.influencerProfile ?? null,
     },
-    history: row.events,
+    history: orderHistory(row.events),
   });
 }
 

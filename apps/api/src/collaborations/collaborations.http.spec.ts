@@ -673,6 +673,62 @@ describe('collaborations over HTTP', () => {
     });
   });
 
+  describe('the order of the history', () => {
+    // The application and the decision carry the SAME time, and the ids are
+    // chosen so that the (time, id) order of the query puts the decision FIRST.
+    const APPLICATION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const DECISION_ID = '00000000-0000-4000-8000-000000000001';
+
+    it.each(['approve', 'reject'] as const)(
+      'shows APPLIED before the decision when both have the same time (%s), to the influencer and to the owner',
+      async (what) => {
+        const first = await applied('infX', offer.id);
+        expect((await decide('ownerA', first.id, what)).status).toBe(200);
+        const [creation, decision] = events(first.id);
+        const sameTime = new Date('2026-10-10T12:00:00.000Z');
+        for (const [entry, id] of [
+          [creation!, APPLICATION_ID],
+          [decision!, DECISION_ID],
+        ] as const) {
+          fake.collaborationEvents.delete(entry.id);
+          fake.collaborationEvents.set(id, {
+            ...entry,
+            id,
+            createdAt: sameTime,
+          });
+        }
+        // The precondition: ordered by (time, id) like the query, the decision is first.
+        const byQuery = events(first.id).sort((a, b) =>
+          a.id.localeCompare(b.id),
+        );
+        expect(byQuery.map((e) => e.toStatus)).toEqual([
+          what === 'approve' ? 'APPROVED' : 'REJECTED',
+          'APPLIED',
+        ]);
+
+        const expected = [
+          [null, 'APPLIED'],
+          ['APPLIED', what === 'approve' ? 'APPROVED' : 'REJECTED'],
+        ];
+        const mine = myCollaborationSchema.parse(
+          await (
+            await call('GET', `/collaborations/mine/${first.id}`, 'infX')
+          ).json(),
+        );
+        const received = receivedCollaborationSchema.parse(
+          await (
+            await call('GET', `/collaborations/received/${first.id}`, 'ownerA')
+          ).json(),
+        );
+        for (const view of [mine, received]) {
+          expect(view.history.map((h) => [h.fromStatus, h.toStatus])).toEqual(
+            expected,
+          );
+        }
+      },
+    );
+  });
+
   describe('reading, isolation and what leaks', () => {
     it('a venue owner reads only the applications to their own offers', async () => {
       const mine = await applied('infX', offer.id);

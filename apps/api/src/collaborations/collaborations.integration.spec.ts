@@ -973,6 +973,78 @@ describe('collaborations against PostgreSQL', () => {
     });
   });
 
+  describe('the order of the history', () => {
+    // The application and the decision carry the SAME time, and the ids are
+    // chosen so that the (time, id) order of the query puts the decision FIRST.
+    // (One pair per case: the ids are primary keys and the rows stay.)
+    const ids = {
+      approve: [
+        'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        '00000000-0000-4000-8000-000000000001',
+      ],
+      reject: [
+        'ffffffff-ffff-4fff-8fff-fffffffffffe',
+        '00000000-0000-4000-8000-000000000002',
+      ],
+    } as const;
+
+    it.each(['approve', 'reject'] as const)(
+      'shows APPLIED before the decision when both have the same time (%s), to the influencer and to the owner',
+      async (what) => {
+        const who = what === 'approve' ? 'infX' : 'infY';
+        const [APPLICATION_ID, DECISION_ID] = ids[what];
+        const first = await applied(who);
+        expect((await decide('ownerA', first.id, what)).status).toBe(200);
+        const [creation, decision] = await kit.events(first.id);
+        const sameTime = new Date('2026-10-10T12:00:00.000Z');
+        await kit.prisma.collaborationEvent.update({
+          where: { id: creation!.id },
+          data: { id: APPLICATION_ID, createdAt: sameTime },
+        });
+        await kit.prisma.collaborationEvent.update({
+          where: { id: decision!.id },
+          data: { id: DECISION_ID, createdAt: sameTime },
+        });
+        // The precondition: the query's own order (time, then id) is the WRONG one here.
+        expect((await kit.events(first.id)).map((e) => e.toStatus)).toEqual([
+          what === 'approve' ? 'APPROVED' : 'REJECTED',
+          'APPLIED',
+        ]);
+
+        const expected = [
+          [null, 'APPLIED'],
+          ['APPLIED', what === 'approve' ? 'APPROVED' : 'REJECTED'],
+        ];
+        const mine = myCollaborationSchema.parse(
+          await (
+            await request('GET', `/collaborations/mine/${first.id}`, who)
+          ).json(),
+        );
+        const received = receivedCollaborationSchema.parse(
+          await (
+            await request(
+              'GET',
+              `/collaborations/received/${first.id}`,
+              'ownerA',
+            )
+          ).json(),
+        );
+        for (const view of [mine, received]) {
+          expect(view.history.map((h) => [h.fromStatus, h.toStatus])).toEqual(
+            expected,
+          );
+        }
+        // The decision's response (rebuilt from the same data) is in order too.
+        const again = await decide('ownerA', first.id, what);
+        expect(
+          receivedCollaborationSchema
+            .parse(await again.json())
+            .history.map((h) => h.toStatus),
+        ).toEqual(['APPLIED', what === 'approve' ? 'APPROVED' : 'REJECTED']);
+      },
+    );
+  });
+
   describe('the database refuses what the rules forbid', () => {
     const base = () => ({
       offerId,
