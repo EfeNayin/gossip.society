@@ -17,6 +17,7 @@ export interface CallOptions<T> {
   method?: 'GET' | 'POST' | 'PUT';
   token?: string;
   body?: unknown;
+  headers?: Record<string, string>;
   parse: (json: unknown) => T;
 }
 
@@ -47,6 +48,7 @@ export function createCaller(
       response = await fetchImpl(`${root}${path}`, {
         method: options.method ?? 'GET',
         headers: {
+          ...options.headers,
           ...(options.body === undefined
             ? {}
             : { 'content-type': 'application/json' }),

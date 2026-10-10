@@ -30,6 +30,12 @@ export class FakeOffersApi implements OffersApi {
   executed = { create: 0, update: 0, publish: 0 };
   publishRefusal?: OfferErrorCode;
   forced: Partial<Record<keyof OffersApi, ApiResult<never>>> = {};
+  // The create ran on the "server" but its answer never arrives (network lost).
+  loseAnswer: { create?: boolean } = {};
+  // The Idempotency-Key of every create call, in order.
+  createKeys: string[] = [];
+  // Like the API: (owner, key) -> the request it was first used for and its offer.
+  private keyed = new Map<string, { request: string; offerId: string }>();
   private counter = 0;
   private gate?: Promise<void>;
   private open?: () => void;
@@ -103,11 +109,29 @@ export class FakeOffersApi implements OffersApi {
   async create(
     token: string,
     body: CreateOfferRequest,
+    idempotencyKey: string,
   ): Promise<ApiResult<OwnerOffer>> {
     this.calls.create++;
+    this.createKeys.push(idempotencyKey);
     const user = this.owner(token);
     if (!user) return this.unauthorized(); // not executed
     if (this.forced.create) return this.forced.create as ApiResult<OwnerOffer>;
+    const scoped = `${user.email}\u0000${idempotencyKey}`;
+    const request = JSON.stringify(body);
+    const earlier = this.keyed.get(scoped);
+    if (earlier) {
+      // Same key and body: the same offer, nothing new. Another body: 409.
+      if (earlier.request !== request)
+        return {
+          kind: 'error',
+          status: 409,
+          offerCode: 'IDEMPOTENCY_KEY_REUSED',
+        };
+      return this.answerCreate({
+        kind: 'ok',
+        data: structuredClone(this.offers.get(earlier.offerId)!.offer),
+      });
+    }
     const branch = this.branches.get(body.branchId);
     if (!branch || branch.ownerEmail !== user.email)
       return { kind: 'error', status: 404 };
@@ -125,7 +149,14 @@ export class FakeOffersApi implements OffersApi {
       suspension: null,
     };
     this.offers.set(offer.id, { ownerEmail: user.email, offer });
-    return this.answer({ kind: 'ok', data: structuredClone(offer) });
+    this.keyed.set(scoped, { request, offerId: offer.id });
+    return this.answerCreate({ kind: 'ok', data: structuredClone(offer) });
+  }
+
+  private answerCreate(result: ApiResult<OwnerOffer>) {
+    if (this.loseAnswer.create)
+      return Promise.resolve<ApiResult<OwnerOffer>>({ kind: 'unreachable' });
+    return this.answer(result);
   }
 
   async update(

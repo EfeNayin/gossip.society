@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Banner, Button, Card } from '@/components/ui';
 import { colors } from '@/theme';
+import { createAttemptTracker } from './idempotency-key';
 import { DATE_INPUT_FORMAT } from './istanbul-time';
 import {
   emptyOfferForm,
@@ -27,7 +28,10 @@ type Props =
       mode: 'create';
       venues: MyVenue[];
       busy: boolean;
-      onSubmit: (request: CreateOfferRequest) => Promise<WriteOutcome | null>;
+      onSubmit: (
+        request: CreateOfferRequest,
+        idempotencyKey: string,
+      ) => Promise<WriteOutcome | null>;
       onCheckStatus: () => void;
     }
   | {
@@ -104,6 +108,8 @@ export function OfferForm(props: Props) {
   const [failure, setFailure] = useState<string | undefined>();
   const [unknown, setUnknown] = useState(false);
   const [notice, setNotice] = useState<string | undefined>();
+  // The Idempotency-Key of the current create attempt (see createAttemptTracker).
+  const [attempt] = useState(() => createAttemptTracker());
 
   const dirty = useMemo(
     () => (edit ? !matchesOffer(values, edit) : false),
@@ -138,17 +144,23 @@ export function OfferForm(props: Props) {
 
     const outcome =
       props.mode === 'create'
-        ? await props.onSubmit(parsed.request)
+        ? await props.onSubmit(parsed.request, attempt.keyFor(parsed.request))
         : await props.onSubmit(toUpdateRequest(parsed.request));
     if (!outcome) return;
     if (outcome.kind === 'ok') {
+      attempt.finish();
       if (props.mode === 'edit') {
         setValues(offerToFormValues(outcome.offer));
         setNotice('Taslak kaydedildi.');
       }
       return;
     }
-    setFailure(writeFailureMessage(outcome));
+    setFailure(
+      writeFailureMessage(
+        outcome,
+        props.mode === 'create' ? 'create' : 'other',
+      ),
+    );
     setUnknown(outcome.kind === 'unknown');
   }
 

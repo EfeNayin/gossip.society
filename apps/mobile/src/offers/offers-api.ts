@@ -1,4 +1,5 @@
 import {
+  IDEMPOTENCY_KEY_HEADER,
   ownerOfferListSchema,
   ownerOfferSchema,
   type CreateOfferRequest,
@@ -17,6 +18,7 @@ export interface OffersApi {
   create(
     accessToken: string,
     body: CreateOfferRequest,
+    idempotencyKey: string,
   ): Promise<ApiResult<OwnerOffer>>;
   update(
     accessToken: string,
@@ -45,11 +47,14 @@ export function createOffersApi(
         token: accessToken,
         parse: parseOffer,
       }),
-    create: (accessToken, body) =>
+    // The key makes repeating this call safe: the API returns the same offer
+    // for the same key and body instead of creating another.
+    create: (accessToken, body, idempotencyKey) =>
       call('/offers/mine', {
         method: 'POST',
         token: accessToken,
         body,
+        headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey },
         parse: parseOffer,
       }),
     update: (accessToken, id, body) =>

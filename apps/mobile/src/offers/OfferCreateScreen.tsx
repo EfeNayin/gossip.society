@@ -70,9 +70,9 @@ export function OfferCreateScreen() {
           venues={venues}
           busy={busy}
           onCheckStatus={() => router.push(routes.offers)}
-          onSubmit={async (request) => {
+          onSubmit={async (request, idempotencyKey) => {
             const outcome = await run((userId) =>
-              offersService.create(userId, request),
+              offersService.create(userId, request, idempotencyKey),
             );
             // The draft exists now: go to its page.
             if (outcome?.kind === 'ok' && mounted.current)

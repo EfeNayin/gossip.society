@@ -1,3 +1,4 @@
+import type { CreateOfferRequest } from '@gossip/shared';
 import { QueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bindUserCacheToSession } from '@/session/bind-user-cache';
@@ -9,6 +10,7 @@ import {
   MemoryStorage,
   user,
 } from '@/session/test-support';
+import { newIdempotencyKey } from './idempotency-key';
 import { applyWriteOutcome } from './offers-cache';
 import {
   createOffersService,
@@ -31,7 +33,16 @@ function setup() {
   const storage = new MemoryStorage();
   const manager = new SessionManager({ api: server, storage, now: clock.now });
   const offersApi = new FakeOffersApi(server);
-  const service = createOffersService({ manager, api: offersApi });
+  const rawService = createOffersService({ manager, api: offersApi });
+  // Most tests don't care about the key: they get a fresh one.
+  const service = {
+    ...rawService,
+    create: (
+      userId: string,
+      body: CreateOfferRequest,
+      key = newIdempotencyKey(),
+    ) => rawService.create(userId, body, key),
+  };
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -338,6 +349,97 @@ describe('offers service: writes', () => {
     expect(await ctx.service.create(id, offerRequest(BRANCH_A))).toEqual({
       kind: 'invalid',
     });
+  });
+});
+
+describe('create with an Idempotency-Key', () => {
+  let ctx: Ctx;
+  let id: string;
+  beforeEach(async () => {
+    ctx = setup();
+    id = await ctx.signIn(ctx.owners.a);
+  });
+  const KEY = '0b6c9a52-4c3e-4c0a-9d4e-7a1f2b3c4d5e';
+
+  it('sends the key it was given to the API', async () => {
+    await ctx.service.create(id, offerRequest(BRANCH_A), KEY);
+    expect(ctx.offersApi.createKeys).toEqual([KEY]);
+  });
+
+  it('a 401 retry inside request() sends the SAME key and still creates one offer', async () => {
+    const [first] = [...ctx.server.sessions[0]!.accessTokens];
+    ctx.server.sessions[0]!.accessTokens.delete(first!);
+
+    const outcome = await ctx.service.create(id, offerRequest(BRANCH_A), KEY);
+
+    expect(outcome.kind).toBe('ok');
+    expect(ctx.offersApi.createKeys).toEqual([KEY, KEY]);
+    expect(ctx.offersApi.executed.create).toBe(1);
+    expect(ctx.offersApi.offers.size).toBe(1);
+  });
+
+  it('a lost answer, then the same save again with the same key: still one offer, and it is the same one', async () => {
+    ctx.offersApi.loseAnswer.create = true;
+    const lost = await ctx.service.create(id, offerRequest(BRANCH_A), KEY);
+    expect(lost).toEqual({ kind: 'unknown' }); // not retried by the service
+    expect(ctx.offersApi.calls.create).toBe(1);
+    expect(ctx.offersApi.offers.size).toBe(1); // the server did create it
+
+    ctx.offersApi.loseAnswer.create = false;
+    const again = await ctx.service.create(id, offerRequest(BRANCH_A), KEY);
+
+    expect(again.kind).toBe('ok');
+    expect(ctx.offersApi.offers.size).toBe(1);
+    expect(ctx.offersApi.executed.create).toBe(1);
+    const [stored] = [...ctx.offersApi.offers.values()];
+    expect(again.kind === 'ok' && again.offer.id).toBe(stored!.offer.id);
+  });
+
+  it('without the key a repeat after a lost answer would have made a second offer (what the key prevents)', async () => {
+    ctx.offersApi.loseAnswer.create = true;
+    await ctx.service.create(id, offerRequest(BRANCH_A));
+    ctx.offersApi.loseAnswer.create = false;
+    await ctx.service.create(id, offerRequest(BRANCH_A));
+    expect(ctx.offersApi.offers.size).toBe(2);
+  });
+
+  it('the same key with different content is a conflict, not a second offer', async () => {
+    await ctx.service.create(id, offerRequest(BRANCH_A), KEY);
+    const outcome = await ctx.service.create(
+      id,
+      offerRequest(BRANCH_A, { title: 'Başka' }),
+      KEY,
+    );
+    expect(outcome).toEqual({
+      kind: 'conflict',
+      code: 'IDEMPOTENCY_KEY_REUSED',
+    });
+    expect(ctx.offersApi.offers.size).toBe(1);
+  });
+
+  it('a different owner using the same key gets their own offer', async () => {
+    await ctx.service.create(id, offerRequest(BRANCH_A), KEY);
+    await ctx.manager.logout();
+    const b = await ctx.signIn(ctx.owners.b);
+    const outcome = await ctx.service.create(b, offerRequest(BRANCH_B), KEY);
+    expect(outcome.kind).toBe('ok');
+    expect(ctx.offersApi.offers.size).toBe(2);
+  });
+
+  it('a 5xx or a network error is never repeated by the service, key or not', async () => {
+    for (const forced of [
+      { kind: 'unreachable' } as const,
+      { kind: 'error', status: 503 } as const,
+    ]) {
+      ctx.offersApi.forced.create = forced;
+      const before = ctx.offersApi.calls.create;
+      expect(await ctx.service.create(id, offerRequest(BRANCH_A), KEY)).toEqual(
+        {
+          kind: 'unknown',
+        },
+      );
+      expect(ctx.offersApi.calls.create).toBe(before + 1);
+    }
   });
 });
 

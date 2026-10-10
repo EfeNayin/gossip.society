@@ -118,8 +118,13 @@ export function createOffersService({ manager, api }: Deps) {
       read(userId, (token) => api.list(token, page)),
     loadOffer: (userId: string, id: string): Promise<OwnerOffer> =>
       read(userId, (token) => api.get(token, id)),
-    create: (userId: string, body: CreateOfferRequest) =>
-      write(userId, (token) => api.create(token, body)),
+    // The same `idempotencyKey` must be used for every repeat of one logical
+    // create (a 401 retry inside request() reuses this closure, so it does).
+    create: (
+      userId: string,
+      body: CreateOfferRequest,
+      idempotencyKey: string,
+    ) => write(userId, (token) => api.create(token, body, idempotencyKey)),
     update: (userId: string, id: string, body: UpdateOfferRequest) =>
       write(userId, (token) => api.update(token, id, body)),
     publish: (userId: string, id: string) =>

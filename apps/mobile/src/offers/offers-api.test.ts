@@ -29,6 +29,8 @@ const offer = {
   suspension: null,
 };
 
+const KEY = '0b6c9a52-4c3e-4c0a-9d4e-7a1f2b3c4d5e';
+
 describe('createOffersApi', () => {
   const fetchMock = vi.fn<typeof fetch>();
   const api = createOffersApi(
@@ -73,7 +75,7 @@ describe('createOffersApi', () => {
 
   it('creates with POST and the request body (kuruş integer, UTC dates)', async () => {
     fetchMock.mockResolvedValue(json(201, offer));
-    await api.create('tok', offerRequest(BRANCH));
+    await api.create('tok', offerRequest(BRANCH), KEY);
     const call = lastCall();
     expect(call.url).toBe('http://api.test/offers/mine');
     expect(call.init.method).toBe('POST');
@@ -85,6 +87,38 @@ describe('createOffersApi', () => {
     });
     expect(Number.isInteger(body.serviceValueKurus)).toBe(true);
     expect(Object.keys(body)).not.toContain('status');
+  });
+
+  it('sends the Idempotency-Key header on create, and only there', async () => {
+    fetchMock.mockResolvedValue(json(201, offer));
+    await api.create('tok', offerRequest(BRANCH), KEY);
+    expect(lastCall().headers.get('idempotency-key')).toBe(KEY);
+    expect(String(lastCall().init.body)).not.toContain(KEY);
+
+    fetchMock.mockResolvedValue(json(200, offer));
+    const { branchId: _b, ...fields } = offerRequest(BRANCH);
+    void _b;
+    await api.update('tok', offer.id, fields);
+    expect(lastCall().headers.get('idempotency-key')).toBeNull();
+    await api.publish('tok', offer.id);
+    expect(lastCall().headers.get('idempotency-key')).toBeNull();
+    await api.list('tok', 1);
+    expect(lastCall().headers.get('idempotency-key')).toBeNull();
+  });
+
+  it('reads IDEMPOTENCY_KEY_REUSED from a 409 on create', async () => {
+    fetchMock.mockResolvedValue(
+      json(409, {
+        statusCode: 409,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        message: 'x',
+      }),
+    );
+    expect(await api.create('tok', offerRequest(BRANCH), KEY)).toMatchObject({
+      kind: 'error',
+      status: 409,
+      offerCode: 'IDEMPOTENCY_KEY_REUSED',
+    });
   });
 
   it('edits with PUT to the offer', async () => {
