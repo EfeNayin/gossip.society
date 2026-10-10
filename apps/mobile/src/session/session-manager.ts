@@ -180,9 +180,13 @@ export class SessionManager {
   // --- authorized requests with exactly one renewal attempt ----------------
 
   /**
-   * Runs an API call with a valid access token. If the token is expired it is
-   * renewed first; if the API still answers 401 the token is renewed once more
-   * and the call is retried ONCE. A second 401 means the session is over.
+   * Runs an API call with a valid access token, with AT MOST ONE renewal per
+   * call:
+   *  - if the token had to be renewed first (it was expired, whether this call
+   *    ran the refresh or joined one already running), a 401 with that fresh
+   *    token means the session is over: no second refresh;
+   *  - if the token looked valid, a 401 allows one renewal and ONE retry; a
+   *    second 401 ends the session.
    */
   async request<T>(
     call: (accessToken: string) => Promise<ApiResult<T>>,
@@ -193,11 +197,20 @@ export class SessionManager {
     if (ready === 'stale') return { kind: 'cancelled' };
     if (ready === 'rejected') return { kind: 'unauthorized' };
     if (ready === 'unavailable') return { kind: 'unreachable' };
+    const renewedAtStart = ready === 'refreshed';
 
     const used = this.tokens?.accessToken;
     if (!used) return { kind: 'cancelled' };
     const first = await call(used);
     if (!(first.kind === 'error' && first.status === 401)) return first;
+
+    if (renewedAtStart) {
+      // The renewal for this call is already used up, and the API refuses the
+      // brand-new token too: the session is over.
+      if (gen !== this.generation) return { kind: 'cancelled' };
+      this.endSession(gen, 'expired');
+      return { kind: 'unauthorized' };
+    }
 
     // The API doesn't accept the token although our clock says it is valid.
     const renewed = await this.renewAfterRejection(gen, used);
@@ -222,11 +235,13 @@ export class SessionManager {
 
   private async ensureFresh(
     gen: number,
-  ): Promise<'ok' | 'rejected' | 'unavailable' | 'stale'> {
+  ): Promise<'fresh' | 'refreshed' | 'rejected' | 'unavailable' | 'stale'> {
     const tokens = this.tokens;
     if (!tokens || gen !== this.generation) return 'stale';
-    if (this.accessUsable(tokens)) return 'ok';
-    return this.refresh(gen, tokens.refreshToken);
+    if (this.accessUsable(tokens)) return 'fresh';
+    // Running or joining a refresh counts as this call's renewal.
+    const result = await this.refresh(gen, tokens.refreshToken);
+    return result === 'ok' ? 'refreshed' : result;
   }
 
   private async renewAfterRejection(gen: number, rejectedAccessToken: string) {

@@ -471,6 +471,86 @@ describe('SessionManager: renewing tokens', () => {
     expect(ctx.api.calls.me).toBe(8); // 4 first attempts + 4 retries
   });
 
+  it('expired access -> successful refresh -> 401: exactly one refresh, then the session is cleared', async () => {
+    const ctx = setup();
+    await signIn(ctx);
+    ctx.clock.advance(ACCESS_TTL_MS + 1000); // the access token is expired at the start
+    ctx.api.forced.me = { kind: 'error', status: 401 }; // and the API refuses even the renewed one
+
+    const result = await ctx.manager.request((token) => ctx.api.me(token));
+
+    expect(result.kind).toBe('unauthorized');
+    expect(ctx.api.calls.refresh).toBe(1); // no second refresh
+    expect(ctx.api.calls.me).toBe(1); // and no retry
+    expect(snap(ctx)).toMatchObject({
+      status: 'signedOut',
+      user: null,
+      notice: 'expired',
+    });
+    await flush(); // the storage clear is queued
+    expect(ctx.storage.value).toBeNull();
+    expect(ctx.storage.log.at(-1)).toBe('clear');
+  });
+
+  it('counts a refresh shared by simultaneous calls: still exactly one refresh in total', async () => {
+    const ctx = setup();
+    await signIn(ctx);
+    ctx.clock.advance(ACCESS_TTL_MS + 1000);
+    ctx.api.forced.me = { kind: 'error', status: 401 };
+    ctx.api.gates.refresh.hold();
+
+    const calls = Array.from({ length: 4 }, () =>
+      ctx.manager.request((token) => ctx.api.me(token)),
+    );
+    await flush();
+    ctx.api.gates.refresh.open();
+    const results = await Promise.all(calls);
+
+    // The first call to see the 401 ends the session; the others then find the
+    // session gone (cancelled). Nobody succeeds and nobody refreshes again.
+    expect(results.some((r) => r.kind === 'unauthorized')).toBe(true);
+    expect(
+      results.every((r) => r.kind === 'unauthorized' || r.kind === 'cancelled'),
+    ).toBe(true);
+    expect(ctx.api.calls.refresh).toBe(1);
+    expect(ctx.api.calls.me).toBe(4); // one attempt each, no retries
+    expect(snap(ctx).status).toBe('signedOut');
+    await flush();
+    expect(ctx.storage.value).toBeNull();
+  });
+
+  it('a valid-looking token that gets a 401 is renewed once and retried once, then a second 401 ends the session', async () => {
+    const ctx = setup();
+    await signIn(ctx);
+    ctx.api.forced.me = { kind: 'error', status: 401 };
+
+    const result = await ctx.manager.request((token) => ctx.api.me(token));
+
+    expect(result.kind).toBe('unauthorized');
+    expect(ctx.api.calls.refresh).toBe(1);
+    expect(ctx.api.calls.me).toBe(2);
+    expect(snap(ctx).status).toBe('signedOut');
+  });
+
+  it('a logout during the call after the start-up refresh keeps the race rules (nothing is stored again)', async () => {
+    const ctx = setup();
+    await signIn(ctx);
+    ctx.clock.advance(ACCESS_TTL_MS + 1000);
+    ctx.api.gates.me.hold();
+
+    const pending = ctx.manager.request((token) => ctx.api.me(token));
+    await vi.waitFor(() => expect(ctx.api.calls.me).toBe(1)); // renewed, call is on the wire
+    const logout = ctx.manager.logout();
+    ctx.api.forced.me = { kind: 'error', status: 401 };
+    ctx.api.gates.me.open();
+    const [result] = await Promise.all([pending, logout]);
+
+    expect(result.kind).not.toBe('ok');
+    expect(ctx.api.calls.refresh).toBe(1);
+    expect(snap(ctx)).toMatchObject({ status: 'signedOut', notice: 'logout' });
+    expect(ctx.storage.value).toBeNull();
+  });
+
   it('survives a failed secure write after renewing (session stays in memory)', async () => {
     const ctx = setup();
     await signIn(ctx);
