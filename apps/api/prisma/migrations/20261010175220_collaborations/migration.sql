@@ -90,8 +90,11 @@ ALTER TABLE "Collaboration"
 
 -- The only transitions this task implements: creation (no previous status) as
 -- APPLIED, and APPLIED -> APPROVED | REJECTED.
+-- (IS NOT NULL is explicit: a CHECK also passes when its condition is NULL, and
+-- "fromStatus" = 'APPLIED' is NULL for a creation entry.)
 ALTER TABLE "CollaborationEvent"
   ADD CONSTRAINT "CollaborationEvent_transition_check" CHECK (
     ("fromStatus" IS NULL AND "toStatus" = 'APPLIED')
-    OR ("fromStatus" = 'APPLIED' AND "toStatus" IN ('APPROVED', 'REJECTED'))
+    OR ("fromStatus" IS NOT NULL AND "fromStatus" = 'APPLIED'
+        AND "toStatus" IN ('APPROVED', 'REJECTED'))
   );
