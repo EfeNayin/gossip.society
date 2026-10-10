@@ -149,10 +149,14 @@ export class FakeApi implements AuthApi {
     const forced = this.forced.me;
     if (forced) return forced;
     const session = this.byAccess(accessToken);
+    // The API answers from the state at the time it handled the request; only
+    // the delivery of the answer is held back by the gate.
+    const result: ApiResult<never> =
+      !session || session.revoked
+        ? { kind: 'error', status: 401 }
+        : ({ kind: 'ok', data: session.user } as ApiResult<never>);
     await this.gates.me.wait();
-    if (!session || session.revoked)
-      return { kind: 'error', status: 401 } as ApiResult<never>;
-    return { kind: 'ok', data: session.user } as ApiResult<never>;
+    return result;
   }
 
   async refresh(refreshToken: string) {
