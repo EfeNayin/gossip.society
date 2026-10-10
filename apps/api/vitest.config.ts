@@ -5,6 +5,8 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['src/**/*.spec.ts'],
+    // Need a real PostgreSQL; run with `pnpm test:integration`.
+    exclude: ['**/node_modules/**', 'src/**/*.integration.spec.ts'],
     env: {
       DATABASE_URL: 'postgresql://test:test@localhost:5432/test',
       // Test-only value, not a real secret.
