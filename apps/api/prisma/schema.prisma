@@ -42,12 +42,17 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  influencerProfile InfluencerProfile?
-  ownedVenues       Venue[]
-  venueStaff        VenueStaff[]
-  authSessions      AuthSession[]
-  suspendedOffers   Offer[]
-  idempotencyKeys   IdempotencyKey[]
+  influencerProfile     InfluencerProfile?
+  ownedVenues           Venue[]
+  venueStaff            VenueStaff[]
+  authSessions          AuthSession[]
+  suspendedOffers       Offer[]
+  idempotencyKeys       IdempotencyKey[]
+  // The collaborations this user applied for (as an influencer), the ones this
+  // user decided (as a venue owner) and the history entries this user wrote.
+  collaborations        Collaboration[]      @relation("CollaborationInfluencer")
+  decidedCollaborations Collaboration[]      @relation("CollaborationDecider")
+  collaborationEvents   CollaborationEvent[]
 }
 
 model InfluencerProfile {
@@ -63,16 +68,17 @@ model InfluencerProfile {
 }
 
 model Venue {
-  id            String         @id @default(uuid()) @db.Uuid
-  name          String
-  description   String?
+  id             String          @id @default(uuid()) @db.Uuid
+  name           String
+  description    String?
   // Exactly one owner per venue for now; one owner may manage many venues.
-  ownerId       String         @db.Uuid
-  owner         User           @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  branches      VenueBranch[]
-  subscriptions Subscription[]
+  ownerId        String          @db.Uuid
+  owner          User            @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  branches       VenueBranch[]
+  subscriptions  Subscription[]
+  collaborations Collaboration[]
 
   @@index([ownerId])
 }
@@ -206,6 +212,7 @@ model Offer {
   updatedAt          DateTime    @updatedAt
 
   idempotencyKeys IdempotencyKey[]
+  collaborations  Collaboration[]
 
   @@index([branchId, createdAt])
   @@index([status, validUntil])
@@ -236,4 +243,73 @@ model IdempotencyKey {
   @@unique([userId, operation, key])
   @@index([expiresAt])
   @@index([offerId])
+}
+
+// Keep these values in sync with collaborationStatusSchema in packages/shared.
+// Only the states this task implements; the later states of the plan
+// (SCHEDULED, CHECKED_IN, ...) are added by the tasks that build them.
+enum CollaborationStatus {
+  APPLIED
+  APPROVED
+  REJECTED
+}
+
+// An influencer's application to an offer and what the venue decided. The state
+// changes ONLY through CollaborationService, which writes the row and its
+// CollaborationEvent in one transaction.
+//
+// - One application per (offer, influencer), ever: the unique index is what
+//   stops concurrent applications, and a rejected influencer can't re-apply.
+// - `venueId` repeats the offer's venue so the monthly quota can be counted
+//   with one indexed query. It is set by the service when the row is created
+//   (an offer never changes venue).
+// - `approvedAt` is the permanent basis of the monthly quota: it is written
+//   once, on approval, and a later cancellation (a later task) must NOT clear
+//   it, so cancelling never gives a match back by itself. Capacity, in
+//   contrast, counts the collaborations that are approved NOW.
+// - `termsSnapshot` is built on the server from the offer at the moment of the
+//   application (never from what the client sent); `termsAcceptedAt` is when the
+//   influencer accepted them.
+// The migration adds CHECK constraints by hand (status/field consistency and
+// the allowed transitions of the history).
+model Collaboration {
+  id              String               @id @default(uuid()) @db.Uuid
+  offerId         String               @db.Uuid
+  offer           Offer                @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  influencerId    String               @db.Uuid
+  influencer      User                 @relation("CollaborationInfluencer", fields: [influencerId], references: [id], onDelete: Restrict)
+  venueId         String               @db.Uuid
+  venue           Venue                @relation(fields: [venueId], references: [id], onDelete: Restrict)
+  status          CollaborationStatus  @default(APPLIED)
+  appliedAt       DateTime
+  termsAcceptedAt DateTime
+  termsSnapshot   Json
+  decidedAt       DateTime?
+  decidedById     String?              @db.Uuid
+  decidedBy       User?                @relation("CollaborationDecider", fields: [decidedById], references: [id], onDelete: Restrict)
+  approvedAt      DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  events          CollaborationEvent[]
+
+  @@unique([offerId, influencerId])
+  @@index([venueId, approvedAt])
+  @@index([venueId, appliedAt])
+  @@index([offerId, status])
+  @@index([influencerId, appliedAt])
+}
+
+// Every creation and every state change of a collaboration, with who did it.
+// The first entry of a collaboration has no previous status.
+model CollaborationEvent {
+  id              String               @id @default(uuid()) @db.Uuid
+  collaborationId String               @db.Uuid
+  collaboration   Collaboration        @relation(fields: [collaborationId], references: [id], onDelete: Cascade)
+  fromStatus      CollaborationStatus?
+  toStatus        CollaborationStatus
+  actorId         String               @db.Uuid
+  actor           User                 @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  createdAt       DateTime             @default(now())
+
+  @@index([collaborationId, createdAt])
 }
