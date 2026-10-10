@@ -2,12 +2,17 @@ import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import {
   adminOfferListSchema,
+  discoverOfferListSchema,
+  discoverOfferSchema,
   adminOfferSchema,
   ownerOfferListSchema,
   ownerOfferSchema,
   type AdminOffer,
   type AdminOfferList,
   type CreateOfferRequest,
+  type DiscoverOffer,
+  type DiscoverOfferList,
+  type DiscoverQuery,
   type ListOffersQuery,
   type OwnerOffer,
   type OwnerOfferList,
@@ -32,6 +37,28 @@ const ownerInclude = {
     },
   },
 } as const;
+
+// What an influencer may read: the branch and the venue's NAME. Never the
+// owner, the subscription or any user (and no ids of the branch or venue).
+const discoverInclude = {
+  branch: {
+    select: {
+      name: true,
+      city: true,
+      address: true,
+      venue: { select: { name: true } },
+    },
+  },
+} as const;
+
+// Visible to influencers: PUBLISHED and valid right now. ONE definition for
+// the list and the detail, so an offer that is suspended or has ended after
+// the list was read can't be opened either. `now` is read once per request.
+const visibleAt = (now: Date) => ({
+  status: 'PUBLISHED' as const,
+  validFrom: { lte: now },
+  validUntil: { gt: now },
+});
 
 const adminInclude = {
   branch: {
@@ -67,6 +94,17 @@ function toOwnerOffer(row: {
       row.suspendedAt && row.suspensionReason
         ? { reason: row.suspensionReason, suspendedAt: row.suspendedAt }
         : null,
+  });
+}
+
+// Parsing with the shared schema drops everything that is not listed.
+function toDiscoverable(row: {
+  branch: { venue: unknown } & Record<string, unknown>;
+}): DiscoverOffer {
+  return discoverOfferSchema.parse({
+    ...row,
+    branch: row.branch,
+    venue: row.branch.venue,
   });
 }
 
@@ -439,6 +477,48 @@ export class OffersService {
     venueId: string,
   ): Promise<void> {
     await tx.$queryRaw`SELECT id FROM "Venue" WHERE id = ${venueId}::uuid FOR UPDATE`;
+  }
+
+  // --- influencer discovery -------------------------------------------------
+
+  /**
+   * Offers an influencer can see now: newest published first, with the id as
+   * the tie-breaker so the order is stable. A page boundary can still move
+   * between two requests when offers are published, suspended or end in the
+   * meantime; that is inherent to paging a live list.
+   */
+  async listDiscoverable({
+    page,
+    pageSize,
+  }: DiscoverQuery): Promise<DiscoverOfferList> {
+    const where = visibleAt(new Date());
+    const [rows, total] = await Promise.all([
+      this.prisma.offer.findMany({
+        where,
+        orderBy: [{ publishedAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: discoverInclude,
+      }),
+      this.prisma.offer.count({ where }),
+    ]);
+    return discoverOfferListSchema.parse({
+      items: rows.map(toDiscoverable),
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+    });
+  }
+
+  /** One visible offer; anything else (hidden or missing) is the same 404. */
+  async getDiscoverable(id: string): Promise<DiscoverOffer> {
+    const row = await this.prisma.offer.findFirst({
+      where: { id, ...visibleAt(new Date()) },
+      include: discoverInclude,
+    });
+    if (!row) throw offerNotFound();
+    return toDiscoverable(row);
   }
 
   // --- admin ---------------------------------------------------------------

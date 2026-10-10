@@ -1,7 +1,5 @@
-import { RoleHome } from '@/components/RoleHome';
+import { InfluencerHome } from '@/discover/InfluencerHome';
 
-export default function InfluencerHome() {
-  return (
-    <RoleHome description="Influencer alanına hoş geldiniz. İş birliği özellikleri sonraki sürümlerde burada olacak." />
-  );
+export default function InfluencerRoute() {
+  return <InfluencerHome />;
 }

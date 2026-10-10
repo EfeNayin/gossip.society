@@ -32,6 +32,7 @@ function RootNavigator() {
       </Stack.Protected>
       <Stack.Protected guard={role === 'INFLUENCER'}>
         <Stack.Screen name="influencer" />
+        <Stack.Screen name="discover/[id]" />
       </Stack.Protected>
       <Stack.Protected guard={role === 'VENUE_OWNER'}>
         <Stack.Screen name="venue-owner" />

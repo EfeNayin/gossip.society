@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import type { ReactNode } from 'react';
 import {
   Pressable,
@@ -12,11 +12,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { routes } from '@/routes';
 import { colors } from '@/theme';
 
-/** Back to the previous screen, or to the owner home when there is none (a reload). */
-export function useGoBack() {
+/** Back to the previous screen, or to `fallback` (the owner home) when there is none (a reload). */
+export function useGoBack(fallback: Href = routes.venueOwner) {
   const router = useRouter();
-  return () =>
-    router.canGoBack() ? router.back() : router.replace(routes.venueOwner);
+  return () => (router.canGoBack() ? router.back() : router.replace(fallback));
 }
 
 export function ScreenShell({
@@ -24,13 +23,15 @@ export function ScreenShell({
   children,
   refreshing,
   onRefresh,
+  fallback,
 }: {
   title: string;
   children: ReactNode;
   refreshing?: boolean;
   onRefresh?: () => void;
+  fallback?: Href;
 }) {
-  const goBack = useGoBack();
+  const goBack = useGoBack(fallback);
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView

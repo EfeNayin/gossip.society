@@ -2,6 +2,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
 import { AppState } from 'react-native';
+import { discoverKeyPrefix } from '@/discover/discover-query';
 import { offersKeyPrefix } from '@/offers/offers-query';
 import { venuesKeyPrefix } from '@/venues/venues-query';
 import { bindUserCacheToSession } from './bind-user-cache';
@@ -20,13 +21,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     void sessionManager.start();
   }, []);
 
-  // Venue and offer data belong to the signed-in user: drop it when the user changes
+  // Venue, offer and discovery data belong to the signed-in user: drop it when the user changes
   // or signs out.
   useEffect(
     () =>
       bindUserCacheToSession(sessionManager, queryClient, [
         venuesKeyPrefix,
         offersKeyPrefix,
+        discoverKeyPrefix,
       ]),
     [queryClient],
   );

@@ -36,6 +36,11 @@ export function parseTlToKurus(input: string): MoneyParse {
 
 const group = (digits: string) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 
+/** A whole number with Turkish grouping: 12500 -> "12.500". */
+export function formatCount(value: number): string {
+  return group(String(value));
+}
+
 /** "1.250,50 ₺" (Turkish grouping), done on integers. */
 export function formatKurusAsTl(kurus: number): string {
   const lira = Math.floor(kurus / 100);
