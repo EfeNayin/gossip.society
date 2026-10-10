@@ -3,6 +3,8 @@ import {
   accountStatusErrorCodeSchema,
   loginRequestSchema,
   loginResponseSchema,
+  refreshRequestSchema,
+  refreshResponseSchema,
   safeUserSchema,
 } from './auth';
 
@@ -73,13 +75,63 @@ describe('safeUserSchema', () => {
   });
 });
 
+const tokens = {
+  accessToken: 'access',
+  accessTokenExpiresAt: '2026-10-10T12:00:00.000Z',
+  refreshToken: 'refresh',
+  refreshTokenExpiresAt: '2026-10-17T12:00:00.000Z',
+};
+
 describe('loginResponseSchema', () => {
   it('does not leak passwordHash through the nested user', () => {
-    const parsed = loginResponseSchema.parse({
-      accessToken: 'token',
-      user: dbRow,
-    });
+    const parsed = loginResponseSchema.parse({ ...tokens, user: dbRow });
     expect(JSON.stringify(parsed)).not.toContain('argon2');
+  });
+
+  it('requires both tokens and valid UTC expiry times', () => {
+    expect(
+      loginResponseSchema.safeParse({
+        ...tokens,
+        refreshToken: undefined,
+        user: dbRow,
+      }).success,
+    ).toBe(false);
+    expect(
+      loginResponseSchema.safeParse({
+        ...tokens,
+        accessTokenExpiresAt: 'tomorrow',
+        user: dbRow,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('refreshRequestSchema', () => {
+  it('accepts a refresh token and strips anything else', () => {
+    expect(
+      refreshRequestSchema.parse({
+        refreshToken: 'abc',
+        sessionId: 'x',
+        role: 'ADMIN',
+      }),
+    ).toEqual({ refreshToken: 'abc' });
+  });
+
+  it.each([
+    {},
+    { refreshToken: '' },
+    { refreshToken: 'x'.repeat(513) },
+    { refreshToken: 5 },
+  ])('rejects %j', (body) => {
+    expect(refreshRequestSchema.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('refreshResponseSchema', () => {
+  it('has the login response shape', () => {
+    expect(
+      refreshResponseSchema.safeParse({ ...tokens, user: dbRow }).success,
+    ).toBe(true);
   });
 });
 

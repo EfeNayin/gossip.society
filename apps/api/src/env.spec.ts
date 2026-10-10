@@ -26,6 +26,23 @@ describe('parseEnv', () => {
     );
   });
 
+  it('defaults the session to 7 days and refresh limits', () => {
+    const env = parseEnv(base);
+    expect(env.SESSION_TTL_SECONDS).toBe(604800);
+    expect(env.REFRESH_RATE_LIMIT).toBe(20);
+    expect(env.REFRESH_RATE_WINDOW_SECONDS).toBe(60);
+  });
+
+  it('rejects a session shorter than the access token', () => {
+    expect(() =>
+      parseEnv({
+        ...base,
+        JWT_ACCESS_TTL_SECONDS: '900',
+        SESSION_TTL_SECONDS: '60',
+      }),
+    ).toThrow(/SESSION_TTL_SECONDS/);
+  });
+
   it('rejects a non-positive token lifetime', () => {
     expect(() => parseEnv({ ...base, JWT_ACCESS_TTL_SECONDS: '0' })).toThrow(
       /JWT_ACCESS_TTL_SECONDS/,
