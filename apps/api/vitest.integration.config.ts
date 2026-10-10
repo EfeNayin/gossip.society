@@ -8,6 +8,10 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['src/**/*.integration.spec.ts'],
+    // One spec file at a time: they share one database, and some assert on
+    // table-wide counts (e.g. the venue list), which another file's venues
+    // would change.
+    fileParallelism: false,
     testTimeout: 30_000,
     hookTimeout: 30_000,
     env: {

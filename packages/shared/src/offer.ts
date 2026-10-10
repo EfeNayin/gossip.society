@@ -60,6 +60,12 @@ export const createOfferRequestSchema = offerFields
 
 export type CreateOfferRequest = z.infer<typeof createOfferRequestSchema>;
 
+// POST /offers/mine accepts an optional Idempotency-Key header: a random value
+// the client makes up for one logical create attempt and repeats on every
+// retry of it. 16-128 URL-safe characters (a UUID fits).
+export const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
+export const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
+
 /** Body of PUT /offers/mine/:id: the full set of editable fields (branch can't change). */
 export const updateOfferRequestSchema = offerFields.refine(
   validRange,
@@ -173,6 +179,8 @@ export const offerErrorCodeSchema = z.enum([
   'OFFER_EXPIRED',
   // Only a PUBLISHED offer can be suspended.
   'OFFER_NOT_PUBLISHED',
+  // The same Idempotency-Key was already used for a different request body.
+  'IDEMPOTENCY_KEY_REUSED',
 ]);
 export type OfferErrorCode = z.infer<typeof offerErrorCodeSchema>;
 

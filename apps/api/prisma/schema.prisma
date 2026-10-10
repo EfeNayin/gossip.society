@@ -47,6 +47,7 @@ model User {
   venueStaff        VenueStaff[]
   authSessions      AuthSession[]
   suspendedOffers   Offer[]
+  idempotencyKeys   IdempotencyKey[]
 }
 
 model InfluencerProfile {
@@ -204,6 +205,35 @@ model Offer {
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
+  idempotencyKeys IdempotencyKey[]
+
   @@index([branchId, createdAt])
   @@index([status, validUntil])
+}
+
+// Makes a create request safe to repeat. The client sends an Idempotency-Key
+// header; the key, the user and the operation are unique together, and the row
+// is written in the SAME transaction as the offer it created (both commit or
+// neither does). `requestHash` is the SHA-256 of the normalized request body:
+// the same key with another body is a conflict, never a second offer. Rows are
+// kept until `expiresAt`; expired rows are treated as absent and deleted by
+// later creates (no timer, no memory: the database is the only protection).
+// The migration adds CHECK constraints by hand (key and hash length, expiry).
+model IdempotencyKey {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // What the key was used for, e.g. "offer.create". Keys of different
+  // operations never collide.
+  operation   String
+  key         String
+  requestHash String
+  offerId     String   @db.Uuid
+  offer       Offer    @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@unique([userId, operation, key])
+  @@index([expiresAt])
+  @@index([offerId])
 }

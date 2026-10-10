@@ -9,6 +9,8 @@ const messages: Record<OfferErrorCode, string> = {
     'Yalnızca taslak ilanlar düzenlenebilir veya yayınlanabilir.',
   OFFER_EXPIRED: 'İlanın geçerlilik süresi bitmiş; yayınlanamaz.',
   OFFER_NOT_PUBLISHED: 'Yalnızca yayındaki ilanlar askıya alınabilir.',
+  IDEMPOTENCY_KEY_REUSED:
+    'Bu Idempotency-Key daha önce farklı bir istek için kullanılmış.',
 };
 
 export function offerConflict(code: OfferErrorCode) {

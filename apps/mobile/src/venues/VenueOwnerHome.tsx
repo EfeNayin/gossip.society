@@ -9,8 +9,10 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Banner, Button, Card, Wordmark } from '@/components/ui';
+import { routes } from '@/routes';
 import { sessionManager } from '@/session';
 import { roleLabels } from '@/session/messages';
 import { useSession } from '@/session/use-session';
@@ -60,6 +62,7 @@ function VenueCard({ venue }: { venue: MyVenue }) {
 // The owner's own venues, from GET /venues/mine. Plain on purpose: no
 // listings, applications, staff or QR until those exist.
 export function VenueOwnerHome() {
+  const router = useRouter();
   const { user } = useSession();
   const { query, failure } = useMyVenues();
   const [signingOut, setSigningOut] = useState(false);
@@ -125,6 +128,18 @@ export function VenueOwnerHome() {
           </View>
         </Card>
 
+        <View style={styles.actions}>
+          <Button
+            label="İlan Oluştur"
+            onPress={() => router.push(routes.newOffer)}
+          />
+          <Button
+            label="İlanlarım"
+            variant="secondary"
+            onPress={() => router.push(routes.offers)}
+          />
+        </View>
+
         <Text style={styles.title}>Mekanlarım</Text>
 
         {message ? <Banner tone="error">{message}</Banner> : null}
@@ -184,6 +199,7 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     marginTop: 2,
   },
+  actions: { gap: 10 },
   userRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   userText: { flex: 1, gap: 4 },
   userName: { color: colors.text, fontSize: 17, fontWeight: '700' },

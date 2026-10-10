@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   adminOfferSchema,
   createOfferRequestSchema,
+  idempotencyKeySchema,
   listOffersQuerySchema,
   MAX_OFFER_CAPACITY,
   MAX_SERVICE_VALUE_KURUS,
+  offerErrorSchema,
   offerStatusSchema,
   ownerOfferSchema,
   suspendOfferRequestSchema,
@@ -250,5 +252,37 @@ describe('response schemas', () => {
         suspension: null,
       }).suspension,
     ).toBeNull();
+  });
+});
+
+describe('idempotency key', () => {
+  it.each([
+    '0b6c9a52-4c3e-4c0a-9d4e-7a1f2b3c4d5e',
+    'a'.repeat(16),
+    'A_b-C'.repeat(25) + 'xyz',
+  ])('accepts %s', (key) => {
+    expect(idempotencyKeySchema.safeParse(key).success).toBe(true);
+  });
+
+  it.each([
+    '',
+    'short',
+    'a'.repeat(129),
+    'has space in the key 123',
+    'weird/chars+in+the+key=1',
+    'ünicode-anahtar-0123456789',
+    '0b6c9a52-4c3e-4c0a-9d4e-7a1f2b3c4d5e, 0b6c9a52-4c3e-4c0a-9d4e-7a1f2b3c4d5e',
+  ])('rejects %j', (key) => {
+    expect(idempotencyKeySchema.safeParse(key).success).toBe(false);
+  });
+
+  it('has its own 409 code the clients can read', () => {
+    expect(
+      offerErrorSchema.parse({
+        statusCode: 409,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        message: 'x',
+      }).code,
+    ).toBe('IDEMPOTENCY_KEY_REUSED');
   });
 });

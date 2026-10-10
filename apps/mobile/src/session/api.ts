@@ -3,18 +3,21 @@
 import {
   accountStatusErrorSchema,
   loginResponseSchema,
+  offerErrorSchema,
   refreshResponseSchema,
   safeUserSchema,
   type AccountStatusErrorCode,
+  type OfferErrorCode,
 } from '@gossip/shared';
 import type { ApiResult, AuthApi } from './types';
 
 const TIMEOUT_MS = 10_000;
 
 export interface CallOptions<T> {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT';
   token?: string;
   body?: unknown;
+  headers?: Record<string, string>;
   parse: (json: unknown) => T;
 }
 
@@ -45,6 +48,7 @@ export function createCaller(
       response = await fetchImpl(`${root}${path}`, {
         method: options.method ?? 'GET',
         headers: {
+          ...options.headers,
           ...(options.body === undefined
             ? {}
             : { 'content-type': 'application/json' }),
@@ -64,13 +68,20 @@ export function createCaller(
 
     if (!response.ok) {
       let code: AccountStatusErrorCode | undefined;
+      let offerCode: OfferErrorCode | undefined;
+      if (response.status === 409) {
+        const parsed = offerErrorSchema.safeParse(
+          await response.json().catch(() => undefined),
+        );
+        if (parsed.success) offerCode = parsed.data.code;
+      }
       if (response.status === 403) {
         const parsed = accountStatusErrorSchema.safeParse(
           await response.json().catch(() => undefined),
         );
         if (parsed.success) code = parsed.data.code;
       }
-      return { kind: 'error', status: response.status, code };
+      return { kind: 'error', status: response.status, code, offerCode };
     }
 
     try {

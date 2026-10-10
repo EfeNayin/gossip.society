@@ -9,4 +9,7 @@ export const routes = {
   influencer: '/influencer' as Href,
   venueOwner: '/venue-owner' as Href,
   staff: '/staff' as Href,
+  offers: '/offers' as Href,
+  newOffer: '/offers/new' as Href,
+  offerDetail: (id: string) => `/offers/${encodeURIComponent(id)}` as Href,
 };
