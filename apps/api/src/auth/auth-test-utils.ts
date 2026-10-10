@@ -71,6 +71,42 @@ export interface FakeBranch {
   updatedAt: Date;
 }
 
+export interface FakeOffer {
+  id: string;
+  branchId: string;
+  title: string;
+  description: string;
+  serviceDescription: string;
+  serviceValueKurus: number;
+  expectedContent: string;
+  minFollowers: number;
+  capacity: number;
+  validFrom: Date;
+  validUntil: Date;
+  status: 'DRAFT' | 'PUBLISHED' | 'SUSPENDED';
+  publishedAt: Date | null;
+  suspendedAt: Date | null;
+  suspensionReason: string | null;
+  suspendedById: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FakePlan {
+  id: string;
+  name: string;
+  activeOfferQuota: number;
+  monthlyMatchQuota: number;
+}
+
+export interface FakeSubscription {
+  id: string;
+  venueId: string;
+  planId: string;
+  startsAt: Date;
+  endsAt: Date;
+}
+
 type Where = Record<string, unknown>;
 
 type OrderBy = Record<string, 'asc' | 'desc'>[];
@@ -94,8 +130,23 @@ function sortRows<T extends object>(rows: T[], orderBy: OrderBy = []): T[] {
 function matches(row: object, where: Where): boolean {
   return Object.entries(where).every(([key, expected]) => {
     const actual = (row as Record<string, unknown>)[key];
-    if (expected !== null && typeof expected === 'object' && 'gt' in expected) {
-      return (actual as Date) > (expected as { gt: Date }).gt;
+    if (
+      expected !== null &&
+      typeof expected === 'object' &&
+      !(expected instanceof Date)
+    ) {
+      const range = expected as {
+        gt?: Date;
+        gte?: Date;
+        lt?: Date;
+        lte?: Date;
+      };
+      return (
+        (range.gt === undefined || (actual as Date) > range.gt) &&
+        (range.gte === undefined || (actual as Date) >= range.gte) &&
+        (range.lt === undefined || (actual as Date) < range.lt) &&
+        (range.lte === undefined || (actual as Date) <= range.lte)
+      );
     }
     return actual === expected;
   });
@@ -118,6 +169,46 @@ export function createFakePrisma() {
   const tick = () => new Date((clock += 1000));
   // Tests set this to make the next venue insert fail (after the user insert).
   const failures: { venueCreate?: Error } = {};
+  const offers = new Map<string, FakeOffer>();
+  const plans = new Map<string, FakePlan>();
+  const subscriptions = new Map<string, FakeSubscription>();
+
+  // Where-clauses of the offer queries: flat fields, { gt }, NOT, and the
+  // branch -> venue -> owner relations the offers service filters on.
+  const branchMatches = (branch: FakeBranch, where: Where): boolean =>
+    Object.entries(where).every(([key, cond]) => {
+      if (key === 'venue') {
+        const venue = venues.get(branch.venueId);
+        return !!venue && matches(venue, cond as Where);
+      }
+      return matches(branch, { [key]: cond });
+    });
+  const offerMatches = (offer: FakeOffer, where: Where = {}): boolean =>
+    Object.entries(where).every(([key, cond]) => {
+      if (key === 'NOT') return !offerMatches(offer, cond as Where);
+      if (key === 'branch') {
+        const branch = branches.get(offer.branchId);
+        return !!branch && branchMatches(branch, cond as Where);
+      }
+      return matches(offer, { [key]: cond });
+    });
+  const offerView = (offer: FakeOffer, include?: unknown) => {
+    if (!include) return offer;
+    const branch = branches.get(offer.branchId)!;
+    const venue = venues.get(branch.venueId)!;
+    return {
+      ...offer,
+      // Deliberately a superset (owner account rows incl. password hash): the
+      // response schemas must strip what the API would never select.
+      branch: {
+        ...branch,
+        venue: { ...venue, owner: users.get(venue.ownerId) },
+      },
+      suspendedBy: offer.suspendedById
+        ? (users.get(offer.suspendedById) ?? null)
+        : null,
+    };
+  };
 
   const venueView = (
     venue: FakeVenue,
@@ -156,6 +247,7 @@ export function createFakePrisma() {
     const snapshot = {
       users: [...users].map(([id, row]) => [id, { ...row }] as const),
       venues: [...venues].map(([id, row]) => [id, { ...row }] as const),
+      offers: [...offers].map(([id, row]) => [id, { ...row }] as const),
       branches: [...branches].map(([id, row]) => [id, { ...row }] as const),
       sessions: [...sessions].map(([id, row]) => [id, { ...row }] as const),
       refreshTokens: [...refreshTokens].map(
@@ -169,6 +261,8 @@ export function createFakePrisma() {
       for (const [id, row] of snapshot.users) users.set(id, row);
       venues.clear();
       for (const [id, row] of snapshot.venues) venues.set(id, row);
+      offers.clear();
+      for (const [id, row] of snapshot.offers) offers.set(id, row);
       branches.clear();
       for (const [id, row] of snapshot.branches) branches.set(id, row);
       sessions.clear();
@@ -327,10 +421,147 @@ export function createFakePrisma() {
         data: Partial<FakeRefreshToken>;
       }) => updateMany(refreshTokens, args),
     },
+    venueBranch: {
+      findFirst: async ({ where }: { where: Where }) =>
+        [...branches.values()].find((b) => branchMatches(b, where)) ?? null,
+    },
+    subscription: {
+      findFirst: async ({ where }: { where: Where }) => {
+        const found = [...subscriptions.values()].find((s) =>
+          matches(s, where),
+        );
+        return found ? { ...found, plan: plans.get(found.planId) } : null;
+      },
+    },
+    offer: {
+      create: async ({
+        data,
+        include,
+      }: {
+        data: Omit<
+          FakeOffer,
+          | 'id'
+          | 'status'
+          | 'publishedAt'
+          | 'suspendedAt'
+          | 'suspensionReason'
+          | 'suspendedById'
+          | 'createdAt'
+          | 'updatedAt'
+        >;
+        include?: unknown;
+      }) => {
+        const offer: FakeOffer = {
+          id: randomUUID(),
+          status: 'DRAFT',
+          publishedAt: null,
+          suspendedAt: null,
+          suspensionReason: null,
+          suspendedById: null,
+          createdAt: tick(),
+          updatedAt: tick(),
+          ...data,
+        };
+        offers.set(offer.id, offer);
+        return offerView(offer, include);
+      },
+      findFirst: async ({
+        where,
+        include,
+      }: {
+        where: Where;
+        include?: unknown;
+      }) => {
+        const found = [...offers.values()].find((o) => offerMatches(o, where));
+        return found ? offerView(found, include ?? { branch: true }) : null;
+      },
+      findUnique: async ({
+        where,
+        include,
+      }: {
+        where: { id: string };
+        include?: unknown;
+      }) => {
+        const found = offers.get(where.id);
+        return found ? offerView(found, include) : null;
+      },
+      findUniqueOrThrow: async ({
+        where,
+        include,
+      }: {
+        where: { id: string };
+        include?: unknown;
+      }) => {
+        const found = offers.get(where.id);
+        if (!found) throw new Error('Not found');
+        return offerView(found, include);
+      },
+      findMany: async ({
+        where,
+        orderBy,
+        skip = 0,
+        take,
+        include,
+      }: {
+        where?: Where;
+        orderBy?: OrderBy;
+        skip?: number;
+        take?: number;
+        include?: unknown;
+      }) =>
+        sortRows(
+          [...offers.values()].filter((o) => offerMatches(o, where)),
+          orderBy,
+        )
+          .slice(skip, take === undefined ? undefined : skip + take)
+          .map((o) => offerView(o, include)),
+      count: async ({ where }: { where?: Where } = {}) =>
+        [...offers.values()].filter((o) => offerMatches(o, where)).length,
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where: Where;
+        data: Partial<FakeOffer>;
+      }) => {
+        const found = [...offers.values()].filter((o) =>
+          offerMatches(o, where),
+        );
+        for (const offer of found)
+          Object.assign(offer, data, { updatedAt: tick() });
+        return { count: found.length };
+      },
+      update: async ({
+        where,
+        data,
+        include,
+      }: {
+        where: { id: string };
+        data: Partial<FakeOffer>;
+        include?: unknown;
+      }) => {
+        const offer = offers.get(where.id);
+        if (!offer) throw new Error('Not found');
+        Object.assign(offer, data, { updatedAt: tick() });
+        return offerView(offer, include);
+      },
+    },
+    // The row lock of the publish transaction: nothing to do in memory.
     $queryRaw: async () => [{ '?column?': 1 }],
   };
   const prisma = { ...models, $transaction };
-  return { users, sessions, refreshTokens, venues, branches, failures, prisma };
+  return {
+    users,
+    sessions,
+    refreshTokens,
+    venues,
+    branches,
+    offers,
+    plans,
+    subscriptions,
+    failures,
+    prisma,
+  };
 }
 
 /** Creates a live session for a user and returns a matching signed access token. */
