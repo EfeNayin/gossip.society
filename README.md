@@ -119,7 +119,7 @@ Her başarılı giriş ayrı bir **oturum** (`AuthSession`) oluşturur. Oturumun
 
 ### İstemci entegrasyonu için notlar (bu PR yalnızca API sözleşmesini kapsar)
 
-- Mobil/admin tarafında token saklama (güvenli depolama, cookie vb.), ekranlar ve otomatik yenileme henüz yoktur; bunlar sonraki istemci entegrasyonunda tasarlanacaktır.
+- Admin web (cookie + sunucu katmanı) ve mobil (güvenli depolama) istemcileri bu sözleşmeye göre yazılmıştır; ayrıntılar aşağıda ve "Mobil uygulama girişi" bölümündedir.
 - **İstemci aynı oturum için aynı anda yalnızca tek bir yenileme isteği yürütmelidir.** Birden çok istek aynı anda `401` alırsa hepsi ayrı ayrı yenilemeye kalkmamalı; tek bir yenileme beklenmeli, sonuçla yeniden denenmelidir. Aynı refresh token ile eşzamanlı iki istek tekrar kullanım sayılır ve oturumu iptal edebilir.
 - Yenilemeden gelen yeni refresh token'ı, eskisini kullanmadan önce kalıcı olarak saklayın. Yenileme yanıtı istemciye ulaşmadan bağlantı kopar ve yeni token kaybolursa eski token artık geçersizdir; kullanıcı yeniden giriş yapar.
 - `refreshTokenExpiresAt` geçtiğinde ya da yenileme `401` verdiğinde kullanıcı giriş ekranına yönlendirilmelidir; `403` + `ACCOUNT_*` kodu hesap durumu ekranını gösterir.
@@ -211,6 +211,26 @@ API, kullanılmış bir refresh token'ı tekrar görünce oturumu iptal eder; co
 
 Gerçek tarayıcı akışı (giriş, yenileme, çıkış, cookie öznitelikleri, eşzamanlı yenileme/çıkış yarışları) Chrome (CDP) ve API'nin yanıtını geciktiren bir ara sunucuyla elle doğrulanmıştır; bu betikler depoda değildir, otomatik bir tarayıcı testi henüz yoktur.
 
+## Mobil uygulama girişi
+
+Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile girer ve **API'nin döndürdüğü kullanıcı kaydındaki role göre** sade bir ana ekran açar: `INFLUENCER`, `VENUE_OWNER`, `VENUE_STAFF`. Ekranlarda yalnızca ad, rol ve çıkış vardır (sahte ilan/istatistik/QR yok). `ADMIN` mobilde yetkili alan açmaz: giriş hemen `POST /auth/logout` ile iptal edilir, hiçbir şey saklanmaz ve "yönetim paneli web üzerinden kullanılır" mesajı gösterilir. Gezinti korumaları (`Stack.Protected`) yalnızca arayüzdür; her isteği API kendi yetki kontrolleriyle denetler. Geliştirme hesapları için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `owner@`, `staff@`, `influencer@gossip-society.example` kullanılabilir.
+
+### Token'lar nasıl saklanır ve yenilenir
+
+- **Native (iOS/Android):** token'lar işletim sisteminin güvenli depolamasındadır (`expo-secure-store`: Keychain / Keystore), AsyncStorage'da değil. Erişim ve yenileme token'ı ile süreleri **tek bir kayıtta** saklanır; böylece çift her zaman birlikte yazılır, yarım yazılamaz. Okunurken doğrulanır; bozuk, eksik veya eski biçimli kayıt silinir ve giriş ekranı açılır. Token'lar günlüklere yazılmaz, arayüzde gösterilmez.
+- **Web önizlemesi (`pnpm --filter mobile web`):** güvenli depolama web'de yoktur; token'lar yalnızca **bellekte** tutulur, `localStorage` / `sessionStorage` kullanılmaz. Sayfa yenilenince yeniden giriş gerekir. Kalıcı web oturumu ve BFF bu görevin dışındadır.
+- **Açılışta ve arka plandan dönüşte** oturum `GET /auth/me` ile doğrulanır (arka plandan dönüşte en fazla 15 sn'de bir). Erişim token'ının süresi (30 sn payla) dolmuşsa önce yenilenir.
+- **Yenileme:** aynı refresh token için aynı anda tek istek yürütülür (eşzamanlı çağrılar onu paylaşır); Bir çağrı için **en fazla bir yenileme** yapılır (başka çağrılarla paylaşılan yenileme de sayılır): token baştan süresi dolmuşsa yenilenir ve yeni token'ın aldığı `401` oturumu bitirir, ikinci yenileme yapılmaz; token geçerli görünürken `401` gelirse bir kez yenilenir ve çağrı **bir kez** tekrarlanır, yeni token da reddedilirse oturum biter (sonsuz döngü yok). Yenileme `401`/`403` ile reddedilirse oturum silinir ve girişe dönülür. Ağ hatası, `429` veya `5xx` ise oturum **silinmez**; "Sunucuya ulaşılamıyor" ekranı ve **Tekrar Dene** gösterilir.
+- **Yarışlar:** her giriş, çıkış ve oturum sonu bir "nesil" sayacını artırır; eski nesilde başlamış bir yenileme/giriş sonucu, durumu veya depoyu değiştirmeden hemen önce senkron olarak kontrol edilir ve gerekiyorsa atılır. Depo yazmaları tek sıralı kuyruktan geçer. Böylece çıkıştan sonra gelen eski yenileme yanıtı oturumu yeniden kuramaz ve çıkış → yeniden giriş sonrasında yeni oturumu ezemez.
+- **Çıkış:** yerel oturum ve depo anında temizlenir, sonra eldeki token'larla sunucu oturumu iptal edilir. Erişim token'ı dolmuşsa (logout için gerekir) önce yenilenir; yenileme reddedilirse oturum zaten geçersizdir. API'ye ulaşılamazsa yerel çıkış tamamlanır ve giriş ekranında sunucudaki oturumun iptal **edilemediği** yazar. Uygulama bu sırada kapatılırsa sunucu oturumu süresi dolana kadar açık kalabilir.
+
+### Sınırlamalar
+
+- **Native güvenli depolama ve "uygulamayı kapatıp yeniden açma" bu ortamda doğrulanmadı** (iOS simülatörü ve Android SDK/emülatörü yoktu); native paketlerin yalnızca derlendiği (`expo export`) görüldü. Gerçek cihazda/simülatörde şunlar elle denenmelidir: giriş → uygulamayı tamamen kapat → aç (oturum sürmeli), Keychain/Keystore'a yazılması, çıkış sonrası kayıt silinmesi. Tarayıcı önizlemesi native cihaz testi yerine geçmez.
+- iOS Keychain kayıtları uygulama silinip aynı bundle ID ile yeniden kurulunca kalabilir (iOS davranışı); eski oturum API tarafından geçersizse ilk açılışta giriş ekranına düşülür.
+- Yenilenen token çifti güvenli depoya yazılamazsa (nadir) oturum o çalışma boyunca bellekte sürer, bir sonraki açılışta eski (kullanılmış) refresh token reddedilir ve yeniden giriş gerekir.
+- Mobil için otomatik arayüz testi yoktur; oturum mantığı Vitest ile test edilir (`pnpm --filter mobile test`), ekranlar tarayıcı önizlemesinde elle doğrulanmıştır.
+
 ## Açılacak adresler
 
 - API kontrolü: <http://localhost:3000/health> — beklenen yanıt `{"status":"ok","db":"up"}`.
@@ -227,6 +247,16 @@ Gerçek tarayıcı akışı (giriş, yenileme, çıkış, cookie öznitelikleri,
 4. Windows Güvenlik Duvarı gerekirse özel ağda Node için API 3000 ve Expo 8081 bağlantılarına izin vermelidir. PostgreSQL/Redis portlarını telefona açmak gerekmez.
 
 Bilgisayarın IP adresi değişirse bu ayarı güncelleyin. Expo tunnel kullanmak API'yi otomatik olarak dışarı açmaz.
+
+**API adresi, hangi ortamda ne yazılır (`apps/mobile/.env` → `EXPO_PUBLIC_API_URL`):**
+
+| Ortam | Değer |
+|---|---|
+| Tarayıcı önizlemesi, iOS simülatörü | `http://localhost:3000` |
+| Android emülatörü | `http://10.0.2.2:3000` (emülatörde `localhost` emülatörün kendisidir) |
+| Fiziksel cihaz (Expo Go) | `http://BILGISAYAR_IP:3000` |
+
+Değişiklikten sonra Expo'yu yeniden başlatın (`EXPO_PUBLIC_*` değerleri paket derlenirken gömülür). Tarayıcı önizlemesi API'ye tarayıcıdan gittiği için API'nin `CORS_ORIGINS` listesinde `http://localhost:8081` bulunmalıdır (varsayılan öyledir); native uygulamada CORS yoktur. `expo-secure-store` Expo Go'da çalışır, ayrıca yerel derleme gerekmez.
 
 ## Günlük çalışma
 
