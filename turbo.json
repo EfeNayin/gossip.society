@@ -10,7 +10,15 @@
       "dependsOn": ["^build"],
       "cache": false,
       "persistent": true,
-      "passThroughEnv": ["PORT", "DATABASE_URL", "CORS_ORIGINS"]
+      "passThroughEnv": [
+        "PORT",
+        "DATABASE_URL",
+        "CORS_ORIGINS",
+        "JWT_SECRET",
+        "JWT_ACCESS_TTL_SECONDS",
+        "LOGIN_RATE_LIMIT",
+        "LOGIN_RATE_WINDOW_SECONDS"
+      ]
     },
     "lint": {
       "dependsOn": ["^build"]
