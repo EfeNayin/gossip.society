@@ -840,4 +840,214 @@ describe('offers over HTTP', () => {
       ).toBe(401);
     });
   });
+
+  describe('POST /offers/mine with an Idempotency-Key', () => {
+    // Fixed dates: a body that is built twice must be the same request.
+    const fixed = (branchId: string, overrides: Record<string, unknown> = {}) =>
+      offerBody(branchId, {
+        validFrom: '2030-01-01T00:00:00.000Z',
+        validUntil: '2030-02-01T00:00:00.000Z',
+        ...overrides,
+      });
+    const KEY = '3f6d2b9a-7c1e-4e55-9a0b-0d6a8f4f9a11';
+    const keyed = (
+      who: Who | null,
+      key: string | undefined,
+      body: unknown,
+      headers: Record<string, string> = {},
+    ) =>
+      fetch(`${baseUrl}/offers/mine`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(who ? { authorization: `Bearer ${tokens.get(who)}` } : {}),
+          ...(key === undefined ? {} : { 'idempotency-key': key }),
+          ...headers,
+        },
+        body: JSON.stringify(body),
+      });
+
+    it('returns the same offer for the same key and body, and creates nothing new', async () => {
+      const first = await keyed('ownerA', KEY, fixed(branchA1));
+      const second = await keyed('ownerA', KEY, fixed(branchA1));
+
+      expect(first.status).toBe(201);
+      expect(first.headers.get('idempotent-replayed')).toBeNull();
+      expect(second.status).toBe(201);
+      expect(second.headers.get('idempotent-replayed')).toBe('true');
+      const a = ownerOfferSchema.parse(await first.json());
+      const b = ownerOfferSchema.parse(await second.json());
+      expect(b).toEqual(a);
+      expect(fake.offers.size).toBe(1);
+      expect(fake.idempotencyKeys.size).toBe(1);
+    });
+
+    it('treats the same body written differently (key order, spaces, +03:00) as the same request', async () => {
+      const body = fixed(branchA1);
+      const first = await keyed('ownerA', KEY, body);
+      const reordered = {
+        validUntil: body.validUntil,
+        validFrom: body.validFrom,
+        capacity: body.capacity,
+        minFollowers: body.minFollowers,
+        expectedContent: `  ${body.expectedContent} `,
+        serviceValueKurus: body.serviceValueKurus,
+        serviceDescription: body.serviceDescription,
+        description: body.description,
+        title: ` ${body.title}`,
+        branchId: body.branchId,
+        status: 'PUBLISHED', // stripped by the schema, so it can't make a "different" request
+      };
+      const second = await keyed('ownerA', KEY, reordered);
+      expect(second.status).toBe(201);
+      expect(second.headers.get('idempotent-replayed')).toBe('true');
+      expect((await second.json()).id).toBe((await first.json()).id);
+      expect(fake.offers.size).toBe(1);
+    });
+
+    it.each([
+      ['title', { title: 'Başka başlık' }],
+      ['service value', { serviceValueKurus: 250_001 }],
+      ['capacity', { capacity: 5 }],
+      ['start', { validFrom: '2030-01-02T00:00:00.000Z' }],
+    ])(
+      'answers 409 IDEMPOTENCY_KEY_REUSED when the %s differs, creating nothing',
+      async (_n, change) => {
+        await keyed('ownerA', KEY, fixed(branchA1));
+        const res = await keyed('ownerA', KEY, fixed(branchA1, change));
+        expect(res.status).toBe(409);
+        expect(await errorCode(res)).toBe('IDEMPOTENCY_KEY_REUSED');
+        expect(fake.offers.size).toBe(1);
+        expect([...fake.offers.values()][0]!.title).toBe('Akşam yemeği');
+      },
+    );
+
+    it('answers 409 when only the branch differs', async () => {
+      await keyed('ownerA', KEY, fixed(branchA1));
+      const res = await keyed('ownerA', KEY, fixed(branchA2));
+      expect(res.status).toBe(409);
+      expect(fake.offers.size).toBe(1);
+    });
+
+    it('lets different keys create different offers, and no key creates every time', async () => {
+      await keyed('ownerA', KEY, fixed(branchA1));
+      await keyed('ownerA', `${KEY}-2`, fixed(branchA1));
+      expect(fake.offers.size).toBe(2);
+      await keyed('ownerA', undefined, fixed(branchA1));
+      await keyed('ownerA', undefined, fixed(branchA1));
+      expect(fake.offers.size).toBe(4);
+      expect(fake.idempotencyKeys.size).toBe(2);
+    });
+
+    it('scopes a key to its user: the same key is another request for another owner', async () => {
+      const a = await keyed('ownerA', KEY, fixed(branchA1));
+      const b = await keyed('ownerB', KEY, fixed(branchB1));
+      expect(b.status).toBe(201);
+      expect(b.headers.get('idempotent-replayed')).toBeNull();
+      expect((await b.json()).id).not.toBe((await a.json()).id);
+      expect(fake.offers.size).toBe(2);
+    });
+
+    it('never lets another owner read an owner’s result through the key', async () => {
+      const a = ownerOfferSchema.parse(
+        await (await keyed('ownerA', KEY, fixed(branchA1))).json(),
+      );
+      // B sends A's key with A's body: a 404 (A's branch is not B's), not A's offer.
+      const res = await keyed('ownerB', KEY, fixed(branchA1));
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(await res.json())).not.toContain(a.id);
+      // ... and with a body of B's own, B gets B's own new offer, never A's.
+      const own = ownerOfferSchema.parse(
+        await (await keyed('ownerB', KEY, fixed(branchB1))).json(),
+      );
+      expect(own.id).not.toBe(a.id);
+      expect(own.venue.name).toBe('Restoran B1');
+    });
+
+    it('rolls the key back with the offer when the branch is not the caller’s', async () => {
+      const res = await keyed('ownerA', KEY, fixed(branchB1));
+      expect(res.status).toBe(404);
+      expect(fake.offers.size).toBe(0);
+      expect(fake.idempotencyKeys.size).toBe(0);
+      // The key is still free for a valid request.
+      expect((await keyed('ownerA', KEY, fixed(branchA1))).status).toBe(201);
+    });
+
+    it('rolls the offer back with the key when saving the key fails', async () => {
+      fake.failures.idempotencyKeyCreate = new Error('disk full');
+      const res = await keyed('ownerA', KEY, fixed(branchA1));
+      expect(res.status).toBe(500);
+      expect(fake.offers.size).toBe(0);
+      expect(fake.idempotencyKeys.size).toBe(0);
+      delete fake.failures.idempotencyKeyCreate;
+      expect((await keyed('ownerA', KEY, fixed(branchA1))).status).toBe(201);
+      expect(fake.offers.size).toBe(1);
+    });
+
+    it('returns the offer as it is now when replayed after an edit', async () => {
+      const first = ownerOfferSchema.parse(
+        await (await keyed('ownerA', KEY, fixed(branchA1))).json(),
+      );
+      const { branchId: _b, ...fields } = fixed(branchA1, {
+        title: 'Düzenlendi',
+      });
+      void _b;
+      expect(
+        (await call('PUT', `/offers/mine/${first.id}`, 'ownerA', fields))
+          .status,
+      ).toBe(200);
+      const againRes = await keyed('ownerA', KEY, fixed(branchA1));
+      const again = ownerOfferSchema.parse(await againRes.json());
+      expect(again.id).toBe(first.id);
+      expect(again.title).toBe('Düzenlendi');
+      expect(fake.offers.size).toBe(1);
+    });
+
+    it('forgets an expired key: the same key then creates a new offer (and the old row is replaced)', async () => {
+      const first = await keyed('ownerA', KEY, fixed(branchA1));
+      const [row] = [...fake.idempotencyKeys.values()];
+      row!.expiresAt = new Date(Date.now() - 1000);
+      const again = await keyed('ownerA', KEY, fixed(branchA1));
+      expect(again.status).toBe(201);
+      expect(again.headers.get('idempotent-replayed')).toBeNull();
+      expect((await again.json()).id).not.toBe((await first.json()).id);
+      expect(fake.offers.size).toBe(2);
+      expect(fake.idempotencyKeys.size).toBe(1);
+    });
+
+    it('purges expired keys of any user on later keyed creates, in bounded batches', async () => {
+      for (let i = 0; i < 3; i++) {
+        await keyed('ownerB', `${KEY}-old-${i}`, fixed(branchB1));
+      }
+      for (const row of fake.idempotencyKeys.values())
+        row.expiresAt = new Date(Date.now() - 1000);
+      await keyed('ownerA', KEY, fixed(branchA1));
+      expect(fake.idempotencyKeys.size).toBe(1);
+      expect([...fake.idempotencyKeys.values()][0]!.key).toBe(KEY);
+      expect(fake.offers.size).toBe(4); // the offers stay; only the keys go
+    });
+
+    it.each([
+      ['too short', 'abc'],
+      ['spaces', 'this key has spaces in it'],
+      ['a repeated header', `${KEY}, ${KEY}`],
+      ['too long', 'a'.repeat(129)],
+    ])(
+      'answers 400 for a key that is %s, creating nothing',
+      async (_n, key) => {
+        const res = await keyed('ownerA', key, fixed(branchA1));
+        expect(res.status).toBe(400);
+        expect(fake.offers.size).toBe(0);
+      },
+    );
+
+    it('still requires a login and the VENUE_OWNER role', async () => {
+      expect((await keyed(null, KEY, fixed(branchA1))).status).toBe(401);
+      expect((await keyed('influencer', KEY, fixed(branchA1))).status).toBe(
+        403,
+      );
+      expect((await keyed('staff', KEY, fixed(branchA1))).status).toBe(403);
+      expect(fake.offers.size).toBe(0);
+    });
+  });
 });

@@ -52,6 +52,17 @@ export interface FakeRefreshToken {
   usedAt: Date | null;
 }
 
+export interface FakeIdempotencyKey {
+  id: string;
+  userId: string;
+  operation: string;
+  key: string;
+  requestHash: string;
+  offerId: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
 export interface FakeVenue {
   id: string;
   name: string;
@@ -168,8 +179,9 @@ export function createFakePrisma() {
   let clock = Date.UTC(2026, 9, 10, 12, 0, 0);
   const tick = () => new Date((clock += 1000));
   // Tests set this to make the next venue insert fail (after the user insert).
-  const failures: { venueCreate?: Error } = {};
+  const failures: { venueCreate?: Error; idempotencyKeyCreate?: Error } = {};
   const offers = new Map<string, FakeOffer>();
+  const idempotencyKeys = new Map<string, FakeIdempotencyKey>();
   const plans = new Map<string, FakePlan>();
   const subscriptions = new Map<string, FakeSubscription>();
 
@@ -248,6 +260,9 @@ export function createFakePrisma() {
       users: [...users].map(([id, row]) => [id, { ...row }] as const),
       venues: [...venues].map(([id, row]) => [id, { ...row }] as const),
       offers: [...offers].map(([id, row]) => [id, { ...row }] as const),
+      idempotencyKeys: [...idempotencyKeys].map(
+        ([id, row]) => [id, { ...row }] as const,
+      ),
       branches: [...branches].map(([id, row]) => [id, { ...row }] as const),
       sessions: [...sessions].map(([id, row]) => [id, { ...row }] as const),
       refreshTokens: [...refreshTokens].map(
@@ -263,6 +278,9 @@ export function createFakePrisma() {
       for (const [id, row] of snapshot.venues) venues.set(id, row);
       offers.clear();
       for (const [id, row] of snapshot.offers) offers.set(id, row);
+      idempotencyKeys.clear();
+      for (const [id, row] of snapshot.idempotencyKeys)
+        idempotencyKeys.set(id, row);
       branches.clear();
       for (const [id, row] of snapshot.branches) branches.set(id, row);
       sessions.clear();
@@ -546,6 +564,50 @@ export function createFakePrisma() {
         return offerView(offer, include);
       },
     },
+    idempotencyKey: {
+      // The unique index (userId, operation, key): a duplicate is Prisma's
+      // P2002, which in PostgreSQL also aborts the transaction.
+      create: async ({
+        data,
+      }: {
+        data: Omit<FakeIdempotencyKey, 'id' | 'createdAt'>;
+      }) => {
+        if (failures.idempotencyKeyCreate) throw failures.idempotencyKeyCreate;
+        const clash = [...idempotencyKeys.values()].some(
+          (row) =>
+            row.userId === data.userId &&
+            row.operation === data.operation &&
+            row.key === data.key,
+        );
+        if (clash) throw Object.assign(new Error('Unique'), { code: 'P2002' });
+        const row: FakeIdempotencyKey = {
+          id: randomUUID(),
+          createdAt: tick(),
+          ...data,
+        };
+        idempotencyKeys.set(row.id, row);
+        return row;
+      },
+      findFirst: async ({ where }: { where: Where }) =>
+        [...idempotencyKeys.values()].find((row) => matches(row, where)) ??
+        null,
+      findMany: async ({ where, take }: { where: Where; take?: number }) =>
+        [...idempotencyKeys.values()]
+          .filter((row) => matches(row, where))
+          .slice(0, take),
+      deleteMany: async ({
+        where,
+      }: {
+        where: Where & { id?: { in: string[] } };
+      }) => {
+        const { id, ...rest } = where;
+        const found = [...idempotencyKeys.values()].filter(
+          (row) => matches(row, rest) && (!id || id.in.includes(row.id)),
+        );
+        for (const row of found) idempotencyKeys.delete(row.id);
+        return { count: found.length };
+      },
+    },
     // The row lock of the publish transaction: nothing to do in memory.
     $queryRaw: async () => [{ '?column?': 1 }],
   };
@@ -557,6 +619,7 @@ export function createFakePrisma() {
     venues,
     branches,
     offers,
+    idempotencyKeys,
     plans,
     subscriptions,
     failures,

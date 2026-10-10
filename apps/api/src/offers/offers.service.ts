@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import {
   adminOfferListSchema,
   adminOfferSchema,
@@ -91,6 +92,41 @@ function toAdminOffer(row: {
   });
 }
 
+// How long a used Idempotency-Key is remembered. A client that lost an answer
+// retries within minutes; a day covers an app restart or a night offline.
+// After that the key is forgotten and the same key means a NEW create.
+export const IDEMPOTENCY_RETENTION_MS = 24 * 3600 * 1000;
+const CREATE_OPERATION = 'offer.create';
+// Expired rows removed per keyed create (see purgeExpiredKeys).
+const PURGE_BATCH = 100;
+
+// SHA-256 of the normalized body (the schema already trimmed the text and put
+// the dates in UTC), with the fields in a fixed order: two bodies that mean
+// the same hash the same, whatever the client's key order or whitespace.
+export function requestHash(body: CreateOfferRequest): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        body.branchId,
+        body.title,
+        body.description,
+        body.serviceDescription,
+        body.serviceValueKurus,
+        body.expectedContent,
+        body.minFollowers,
+        body.capacity,
+        body.validFrom,
+        body.validUntil,
+      ]),
+    )
+    .digest('hex');
+}
+
+const isUniqueViolation = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { code?: unknown }).code === 'P2002';
+
 const dates = ({
   validFrom,
   validUntil,
@@ -111,27 +147,148 @@ const dates = ({
  */
 @Injectable()
 export class OffersService {
+  private readonly logger = new Logger(OffersService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   // --- venue owner ---------------------------------------------------------
 
-  /** A new DRAFT in one of the caller's own branches. */
+  /**
+   * A new DRAFT in one of the caller's own branches.
+   *
+   * With an `idempotencyKey` the create is safe to repeat (see the
+   * IdempotencyKey model): the key is unique per (user, operation), the offer
+   * and the key row are written in ONE transaction, and
+   *  - the same key and the same body again returns the SAME offer (as it is
+   *    now) and creates nothing: `replayed` is true;
+   *  - the same key with another body is a 409 IDEMPOTENCY_KEY_REUSED;
+   *  - concurrent requests with one key race on the unique index: the loser's
+   *    insert waits for the winner to commit, fails with a unique violation,
+   *    its transaction (including its offer) is rolled back, and it then
+   *    replays the winner's offer. Exactly one offer exists.
+   * Nothing here lives in process memory: the database decides.
+   */
   async createDraft(
+    ownerId: string,
+    body: CreateOfferRequest,
+    idempotencyKey?: string,
+  ): Promise<{ offer: OwnerOffer; replayed: boolean }> {
+    if (idempotencyKey === undefined) {
+      return {
+        offer: await this.insertDraft(this.prisma, ownerId, body),
+        replayed: false,
+      };
+    }
+
+    const hash = requestHash(body);
+    const earlier = await this.findKey(ownerId, idempotencyKey);
+    if (earlier) return this.replay(ownerId, earlier, hash);
+    await this.purgeExpiredKeys();
+
+    // A lost race is retried only to find the winner's row; a few rounds cover
+    // the winner's row expiring or being purged in between.
+    for (let round = 0; round < 3; round++) {
+      try {
+        const offer = await this.prisma.$transaction(async (tx) => {
+          const now = new Date();
+          // An expired row of this very key is forgotten: free the slot.
+          await tx.idempotencyKey.deleteMany({
+            where: {
+              userId: ownerId,
+              operation: CREATE_OPERATION,
+              key: idempotencyKey,
+              expiresAt: { lte: now },
+            },
+          });
+          const created = await this.insertDraft(tx, ownerId, body);
+          await tx.idempotencyKey.create({
+            data: {
+              userId: ownerId,
+              operation: CREATE_OPERATION,
+              key: idempotencyKey,
+              requestHash: hash,
+              offerId: created.id,
+              expiresAt: new Date(now.getTime() + IDEMPOTENCY_RETENTION_MS),
+            },
+          });
+          return created;
+        });
+        return { offer, replayed: false };
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        const winner = await this.findKey(ownerId, idempotencyKey);
+        if (winner) return this.replay(ownerId, winner, hash);
+      }
+    }
+    throw new ConflictException('İstek şu anda tamamlanamadı; tekrar deneyin.');
+  }
+
+  // The branch must be the caller's, else 404. The status is not part of the
+  // data: the column default (DRAFT) applies.
+  private async insertDraft(
+    db: Pick<PrismaService, 'venueBranch' | 'offer'>,
     ownerId: string,
     { branchId, ...fields }: CreateOfferRequest,
   ): Promise<OwnerOffer> {
-    const branch = await this.prisma.venueBranch.findFirst({
+    const branch = await db.venueBranch.findFirst({
       where: { id: branchId, venue: { ownerId } },
       select: { id: true },
     });
     if (!branch) throw branchNotFound();
 
-    // The status is not part of the data: the column default (DRAFT) applies.
-    const row = await this.prisma.offer.create({
+    const row = await db.offer.create({
       data: { ...fields, ...dates(fields), branchId },
       include: ownerInclude,
     });
     return toOwnerOffer(row);
+  }
+
+  // A key of THIS user and operation that has not expired.
+  private findKey(ownerId: string, key: string) {
+    return this.prisma.idempotencyKey.findFirst({
+      where: {
+        userId: ownerId,
+        operation: CREATE_OPERATION,
+        key,
+        expiresAt: { gt: new Date() },
+      },
+      select: { requestHash: true, offerId: true },
+    });
+  }
+
+  private async replay(
+    ownerId: string,
+    earlier: { requestHash: string; offerId: string },
+    hash: string,
+  ): Promise<{ offer: OwnerOffer; replayed: true }> {
+    if (earlier.requestHash !== hash) {
+      throw offerConflict('IDEMPOTENCY_KEY_REUSED');
+    }
+    return {
+      offer: await this.getMine(ownerId, earlier.offerId),
+      replayed: true,
+    };
+  }
+
+  // Expired keys are deleted by later keyed creates, a bounded batch at a time
+  // (so a create never waits on a big delete). Best effort: a failure here
+  // must not fail the create, and expired rows are ignored by every lookup
+  // anyway. If nobody creates, nothing is added, so the table can't grow.
+  private async purgeExpiredKeys(): Promise<void> {
+    try {
+      const expired = await this.prisma.idempotencyKey.findMany({
+        where: { expiresAt: { lte: new Date() } },
+        select: { id: true },
+        take: PURGE_BATCH,
+      });
+      if (expired.length > 0) {
+        await this.prisma.idempotencyKey.deleteMany({
+          where: { id: { in: expired.map((row) => row.id) } },
+        });
+      }
+    } catch {
+      this.logger.warn('Could not purge expired idempotency keys.');
+    }
   }
 
   async listMine(
