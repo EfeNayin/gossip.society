@@ -1,14 +1,10 @@
 import { cache } from 'react';
 import { cookies, headers } from 'next/headers';
 import { apiMe } from './api';
+import { AUTH_STATE, AUTH_STATE_HEADER } from './auth-state';
 import { cookieNames } from './cookies';
 import { isSecureEnvironment } from './config';
 import { classifyMe, type AdminSession } from './session-state';
-
-// Set by proxy.ts only (and always removed from incoming requests there), to
-// tell the page that the proxy could not renew the tokens because the API was
-// unreachable.
-export const AUTH_STATE_HEADER = 'x-gs-auth-state';
 
 /**
  * Data-access layer for the panel: asks the API who the cookie's access token
@@ -23,9 +19,12 @@ export const getAdminSession = cache(async (): Promise<AdminSession> => {
     headers(),
   ]);
 
-  if (requestHeaders.get(AUTH_STATE_HEADER) === 'unavailable') {
-    return { kind: 'unavailable' };
-  }
+  // Set by proxy.ts only (it strips any client-sent copy).
+  const authState = requestHeaders.get(AUTH_STATE_HEADER);
+  if (authState === AUTH_STATE.unavailable) return { kind: 'unavailable' };
+  // The proxy found no usable session for this request's tokens (refresh
+  // refused or session ended). Don't trust whatever cookies it carried.
+  if (authState === AUTH_STATE.none) return { kind: 'unauthenticated' };
 
   const accessToken = cookieStore.get(
     cookieNames(isSecureEnvironment()).access,

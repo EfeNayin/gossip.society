@@ -18,9 +18,6 @@ export function decideProxyAction(input: {
 }): ProxyDecision {
   const { pathname, accessToken, refreshToken, nowMs } = input;
 
-  // Ending a session must work no matter what state the cookies are in.
-  if (pathname === '/session/end') return { kind: 'pass' };
-
   const accessUsable = isAccessTokenUsable(accessToken, nowMs);
 
   if (pathname === '/login') {

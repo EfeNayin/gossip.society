@@ -24,10 +24,15 @@ async function ApiStatus() {
 async function Panel() {
   const session = await getAdminSession();
 
-  if (session.kind === 'unauthenticated')
-    redirect('/session/end?reason=expired');
-  if (session.kind === 'forbidden') redirect('/session/end?reason=forbidden');
-  if (session.kind === 'inactive') redirect('/session/end?reason=inactive');
+  // Rendering can't clear cookies, so an unusable session goes to the
+  // end-session step (a side-effect-free page that submits a POST action).
+  if (
+    session.kind === 'unauthenticated' ||
+    session.kind === 'forbidden' ||
+    session.kind === 'inactive'
+  ) {
+    redirect('/session/end');
+  }
 
   if (session.kind === 'unavailable') {
     return (

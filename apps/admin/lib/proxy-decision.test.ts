@@ -46,8 +46,9 @@ describe('decideProxyAction', () => {
     });
   });
 
-  it('never interferes with ending a session', () => {
-    expect(decide('/session/end')).toEqual({ kind: 'pass' });
-    expect(decide('/session/end', expired, 'rt')).toEqual({ kind: 'pass' });
+  it('treats the session-end page like any protected page', () => {
+    expect(decide('/session/end')).toEqual({ kind: 'redirect', to: '/login' });
+    expect(decide('/session/end', expired, 'rt')).toEqual({ kind: 'refresh' });
+    expect(decide('/session/end', fresh, 'rt')).toEqual({ kind: 'pass' });
   });
 });

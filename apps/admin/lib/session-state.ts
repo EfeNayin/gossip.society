@@ -31,3 +31,22 @@ export function classifyMe(result: ApiResult<SafeUser>): AdminSession {
       return { kind: 'ok', user: result.data };
   }
 }
+
+export type EndReason = 'expired' | 'forbidden' | 'inactive';
+
+/**
+ * Why a session has to be ended, or undefined when there is nothing to end
+ * (a valid admin session, or the API simply can't be reached right now).
+ */
+export function endReasonFor(session: AdminSession): EndReason | undefined {
+  switch (session.kind) {
+    case 'unauthenticated':
+      return 'expired';
+    case 'forbidden':
+      return 'forbidden';
+    case 'inactive':
+      return 'inactive';
+    default:
+      return undefined;
+  }
+}
