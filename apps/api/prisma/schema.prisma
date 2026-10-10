@@ -46,6 +46,7 @@ model User {
   ownedVenues       Venue[]
   venueStaff        VenueStaff[]
   authSessions      AuthSession[]
+  suspendedOffers   Offer[]
 }
 
 model InfluencerProfile {
@@ -61,15 +62,16 @@ model InfluencerProfile {
 }
 
 model Venue {
-  id          String        @id @default(uuid()) @db.Uuid
-  name        String
-  description String?
+  id            String         @id @default(uuid()) @db.Uuid
+  name          String
+  description   String?
   // Exactly one owner per venue for now; one owner may manage many venues.
-  ownerId     String        @db.Uuid
-  owner       User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  branches    VenueBranch[]
+  ownerId       String         @db.Uuid
+  owner         User           @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  branches      VenueBranch[]
+  subscriptions Subscription[]
 
   @@index([ownerId])
 }
@@ -85,6 +87,7 @@ model VenueBranch {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
   staff     VenueStaff[]
+  offers    Offer[]
 
   @@index([venueId])
 }
@@ -134,4 +137,73 @@ model RefreshToken {
   usedAt    DateTime?
 
   @@index([sessionId])
+}
+
+// An editable subscription package. The real prices and quotas are not decided
+// yet, so nothing here is hard-coded and there is no price column.
+model SubscriptionPlan {
+  id                String         @id @default(uuid()) @db.Uuid
+  name              String         @unique
+  // Offers a venue may have PUBLISHED and not yet expired at the same time.
+  activeOfferQuota  Int
+  // Reserved for the application/approval task; not enforced anywhere yet.
+  monthlyMatchQuota Int
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  subscriptions     Subscription[]
+}
+
+// A venue's subscription for one period, [startsAt, endsAt) in UTC. The
+// migration adds (by hand, Prisma can't express them) an exclusion constraint
+// so the periods of one venue never overlap, and a CHECK that endsAt > startsAt.
+model Subscription {
+  id        String           @id @default(uuid()) @db.Uuid
+  venueId   String           @db.Uuid
+  venue     Venue            @relation(fields: [venueId], references: [id], onDelete: Restrict)
+  planId    String           @db.Uuid
+  plan      SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  startsAt  DateTime
+  endsAt    DateTime
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([venueId, startsAt, endsAt])
+  @@index([planId])
+}
+
+// Keep these values in sync with offerStatusSchema in packages/shared.
+enum OfferStatus {
+  DRAFT
+  PUBLISHED
+  SUSPENDED
+}
+
+// A collaboration offer of a venue branch. The venue (and so the owner) is
+// reached through the branch; there is no duplicated venueId/ownerId. Money is
+// an integer number of kuruş, times are UTC. The migration adds CHECK
+// constraints for the value rules and the status/publish/suspension fields.
+model Offer {
+  id                 String      @id @default(uuid()) @db.Uuid
+  branchId           String      @db.Uuid
+  branch             VenueBranch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  title              String
+  description        String
+  serviceDescription String
+  serviceValueKurus  Int
+  expectedContent    String
+  minFollowers       Int         @default(0)
+  capacity           Int
+  validFrom          DateTime
+  validUntil         DateTime
+  status             OfferStatus @default(DRAFT)
+  publishedAt        DateTime?
+  suspendedAt        DateTime?
+  suspensionReason   String?
+  suspendedById      String?     @db.Uuid
+  suspendedBy        User?       @relation(fields: [suspendedById], references: [id], onDelete: Restrict)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  @@index([branchId, createdAt])
+  @@index([status, validUntil])
 }
