@@ -1,6 +1,8 @@
 import * as SplashScreen from 'expo-splash-screen';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
 import { AppState } from 'react-native';
+import { bindVenueCacheToSession } from '@/venues/venues-query';
 import { sessionManager } from './index';
 import { useSession } from './use-session';
 
@@ -9,11 +11,19 @@ void SplashScreen.preventAutoHideAsync();
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const { status } = useSession();
+  const queryClient = useQueryClient();
 
   // On launch: load the stored session and validate it with the API.
   useEffect(() => {
     void sessionManager.start();
   }, []);
+
+  // Venue data belongs to the signed-in user: drop it when the user changes
+  // or signs out.
+  useEffect(
+    () => bindVenueCacheToSession(sessionManager, queryClient),
+    [queryClient],
+  );
 
   // Back from the background: check again (rate-limited inside the manager).
   useEffect(() => {

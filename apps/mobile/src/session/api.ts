@@ -11,20 +11,32 @@ import type { ApiResult, AuthApi } from './types';
 
 const TIMEOUT_MS = 10_000;
 
-export function createAuthApi(
+export interface CallOptions<T> {
+  method?: 'GET' | 'POST';
+  token?: string;
+  body?: unknown;
+  parse: (json: unknown) => T;
+}
+
+export type Caller = <T>(
+  path: string,
+  options: CallOptions<T>,
+) => Promise<ApiResult<T>>;
+
+/**
+ * One fetch wrapper for every endpoint: timeout, Bearer header, status and
+ * body handling, and a result that is `ok`, `error` or `unreachable`. A 200
+ * whose body doesn't match the shared schema is a controlled `error` (502).
+ */
+export function createCaller(
   baseUrl: string,
   fetchImpl: typeof fetch = fetch,
-): AuthApi {
+): Caller {
   const root = baseUrl.replace(/\/+$/, '');
 
-  async function call<T>(
+  return async function call<T>(
     path: string,
-    options: {
-      method?: 'GET' | 'POST';
-      token?: string;
-      body?: unknown;
-      parse: (json: unknown) => T;
-    },
+    options: CallOptions<T>,
   ): Promise<ApiResult<T>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -69,7 +81,14 @@ export function createAuthApi(
       // A success answer that doesn't match the shared contract.
       return { kind: 'error', status: 502 };
     }
-  }
+  };
+}
+
+export function createAuthApi(
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): AuthApi {
+  const call = createCaller(baseUrl, fetchImpl);
 
   return {
     login: (credentials) =>

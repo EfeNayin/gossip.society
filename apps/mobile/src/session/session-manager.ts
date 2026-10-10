@@ -158,14 +158,8 @@ export class SessionManager {
         } else {
           this.set({ status: 'signedIn', user: result.data });
         }
-      } else if (
-        result.kind === 'error' &&
-        result.status === 403 &&
-        result.code
-      ) {
-        this.endSession(gen, 'inactive');
       } else if (result.kind === 'unauthorized') {
-        // request() already ended the session.
+        // request() already ended the session (expired, revoked, inactive).
       } else if (result.kind !== 'cancelled') {
         // Offline, 5xx, 429...: keep the session and let the user retry.
         this.set({ status: 'unavailable' });
@@ -202,6 +196,11 @@ export class SessionManager {
     const used = this.tokens?.accessToken;
     if (!used) return { kind: 'cancelled' };
     const first = await call(used);
+    // The answer to a call that was on the wire while the session changed
+    // (sign-out, another sign-in) belongs to the old session: drop it.
+    if (gen !== this.generation) return { kind: 'cancelled' };
+    const ended = this.endIfAccountInactive(gen, first);
+    if (ended) return ended;
     if (!(first.kind === 'error' && first.status === 401)) return first;
 
     if (renewedAtStart) {
@@ -221,12 +220,29 @@ export class SessionManager {
     const retryToken = this.tokens?.accessToken;
     if (!retryToken || gen !== this.generation) return { kind: 'cancelled' };
     const second = await call(retryToken);
+    if (gen !== this.generation) return { kind: 'cancelled' };
+    const endedAfterRetry = this.endIfAccountInactive(gen, second);
+    if (endedAfterRetry) return endedAfterRetry;
     if (second.kind === 'error' && second.status === 401) {
       // A fresh token was refused too: no retry loop, the session is over.
       this.endSession(gen, 'expired');
       return { kind: 'unauthorized' };
     }
     return second;
+  }
+
+  // A 403 that carries an account-status code (PENDING / SUSPENDED) means the
+  // account can no longer be used: end the session. A plain 403 (role policy)
+  // is NOT this and is returned to the caller.
+  private endIfAccountInactive<T>(
+    gen: number,
+    result: ApiResult<T>,
+  ): { kind: 'unauthorized' } | null {
+    if (result.kind === 'error' && result.status === 403 && result.code) {
+      this.endSession(gen, 'inactive');
+      return { kind: 'unauthorized' };
+    }
+    return null;
   }
 
   private accessUsable(session: StoredSession) {
@@ -267,7 +283,13 @@ export class SessionManager {
       if (this.tokens?.refreshToken === refreshToken) {
         this.tokens = result.session;
         void this.persist(result.session);
-        if (result.user.role !== 'ADMIN') this.set({ user: result.user });
+        if (result.user.role === 'ADMIN') {
+          // The account became an admin: the mobile app has no admin area.
+          void this.rejectAdmin();
+          return 'rejected';
+        }
+        // A role change shows up here, and the navigation follows it.
+        this.set({ user: result.user });
       }
       return 'ok';
     }

@@ -564,6 +564,106 @@ describe('SessionManager: renewing tokens', () => {
   });
 });
 
+describe('SessionManager: data calls and the session', () => {
+  it('drops the answer to a call that was on the wire when the user signed out', async () => {
+    const ctx = setup();
+    await signIn(ctx);
+    ctx.api.gates.me.hold();
+
+    const pending = ctx.manager.request((token) => ctx.api.me(token));
+    await vi.waitFor(() => expect(ctx.api.calls.me).toBe(1));
+    await ctx.manager.logout();
+    ctx.api.gates.me.open();
+
+    // A 200 is returned by the API, but it belongs to the signed-out session.
+    expect((await pending).kind).toBe('cancelled');
+  });
+
+  it('drops a late answer after another user signed in', async () => {
+    const ctx = setup();
+    await signIn(ctx, ctx.accounts.owner);
+    ctx.api.gates.me.hold();
+    const pending = ctx.manager.request((token) => ctx.api.me(token));
+    await vi.waitFor(() => expect(ctx.api.calls.me).toBe(1));
+
+    await ctx.manager.logout();
+    await signIn(ctx, ctx.accounts.staff);
+    ctx.api.gates.me.open();
+
+    expect((await pending).kind).toBe('cancelled');
+    expect(snap(ctx).user?.role).toBe('VENUE_STAFF');
+  });
+
+  it.each(['ACCOUNT_SUSPENDED', 'ACCOUNT_PENDING'] as const)(
+    'ends the session on a 403 %s from any data call (not a generic error)',
+    async (code) => {
+      const ctx = setup();
+      await signIn(ctx);
+
+      const result = await ctx.manager.request(async () => ({
+        kind: 'error',
+        status: 403,
+        code,
+      }));
+
+      expect(result.kind).toBe('unauthorized');
+      expect(snap(ctx)).toMatchObject({
+        status: 'signedOut',
+        notice: 'inactive',
+      });
+      await flush();
+      expect(ctx.storage.value).toBeNull();
+    },
+  );
+
+  it('hands a plain 403 (role policy) back to the caller and keeps the session', async () => {
+    const ctx = setup();
+    await signIn(ctx);
+
+    const result = await ctx.manager.request(async () => ({
+      kind: 'error',
+      status: 403,
+    }));
+
+    expect(result).toEqual({ kind: 'error', status: 403 });
+    expect(snap(ctx).status).toBe('signedIn');
+  });
+
+  it('follows a role change that arrives with a token refresh', async () => {
+    const ctx = setup();
+    await signIn(ctx, ctx.accounts.owner);
+    ctx.api.sessions[0]!.user = user('INFLUENCER'); // changed on the server
+    ctx.clock.advance(ACCESS_TTL_MS + 1000);
+
+    const result = await ctx.manager.request((token) => ctx.api.me(token));
+
+    expect(result.kind).toBe('ok');
+    expect(snap(ctx)).toMatchObject({
+      status: 'signedIn',
+      user: { role: 'INFLUENCER' },
+    });
+  });
+
+  it('rejects and revokes a session whose refresh shows the account became an ADMIN', async () => {
+    const ctx = setup();
+    await signIn(ctx, ctx.accounts.owner);
+    ctx.api.sessions[0]!.user = ctx.accounts.admin;
+    ctx.clock.advance(ACCESS_TTL_MS + 1000);
+
+    const result = await ctx.manager.request((token) => ctx.api.me(token));
+
+    expect(result.kind).not.toBe('ok');
+    expect(snap(ctx)).toMatchObject({
+      status: 'signedOut',
+      user: null,
+      notice: 'admin-web',
+    });
+    await flush();
+    expect(ctx.storage.value).toBeNull();
+    expect(ctx.api.sessions[0]!.revoked).toBe(true);
+  });
+});
+
 describe('SessionManager: logout', () => {
   it('signs out locally at once and revokes the server session', async () => {
     const ctx = setup();
