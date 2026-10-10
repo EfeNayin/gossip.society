@@ -14,6 +14,7 @@
         "PORT",
         "DATABASE_URL",
         "CORS_ORIGINS",
+        "API_URL",
         "JWT_SECRET",
         "JWT_ACCESS_TTL_SECONDS",
         "LOGIN_RATE_LIMIT",
