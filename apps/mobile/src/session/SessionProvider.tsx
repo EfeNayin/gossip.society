@@ -2,7 +2,9 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
 import { AppState } from 'react-native';
-import { bindVenueCacheToSession } from '@/venues/venues-query';
+import { offersKeyPrefix } from '@/offers/offers-query';
+import { venuesKeyPrefix } from '@/venues/venues-query';
+import { bindUserCacheToSession } from './bind-user-cache';
 import { sessionManager } from './index';
 import { useSession } from './use-session';
 
@@ -18,10 +20,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     void sessionManager.start();
   }, []);
 
-  // Venue data belongs to the signed-in user: drop it when the user changes
+  // Venue and offer data belong to the signed-in user: drop it when the user changes
   // or signs out.
   useEffect(
-    () => bindVenueCacheToSession(sessionManager, queryClient),
+    () =>
+      bindUserCacheToSession(sessionManager, queryClient, [
+        venuesKeyPrefix,
+        offersKeyPrefix,
+      ]),
     [queryClient],
   );
 

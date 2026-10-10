@@ -1,5 +1,6 @@
 import type { MyVenuesResponse } from '@gossip/shared';
 import type { QueryClient } from '@tanstack/react-query';
+import { bindUserCacheToSession } from '@/session/bind-user-cache';
 import type { SessionManager } from '@/session/session-manager';
 import type { VenuesApi } from './venues-api';
 
@@ -67,22 +68,10 @@ export function createMyVenuesFetcher(deps: {
   };
 }
 
-/**
- * Removes every cached venue query when the signed-in user changes or signs
- * out, so the previous user's data is gone before anyone else can see it.
- * Returns the unsubscribe function.
- */
+/** Removes the venue queries when the user changes or signs out. */
 export function bindVenueCacheToSession(
   manager: Pick<SessionManager, 'subscribe' | 'getSnapshot'>,
   queryClient: QueryClient,
 ): () => void {
-  let userId = manager.getSnapshot().user?.id ?? null;
-  return manager.subscribe(() => {
-    const next = manager.getSnapshot().user?.id ?? null;
-    if (next === userId) return;
-    userId = next;
-    // Stop requests still on the wire, then drop what was cached.
-    void queryClient.cancelQueries({ queryKey: venuesKeyPrefix });
-    queryClient.removeQueries({ queryKey: venuesKeyPrefix });
-  });
+  return bindUserCacheToSession(manager, queryClient, [venuesKeyPrefix]);
 }

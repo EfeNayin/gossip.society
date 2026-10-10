@@ -1,5 +1,6 @@
 import type {
   AccountStatusErrorCode,
+  OfferErrorCode,
   LoginRequest,
   LoginResponse,
   RefreshResponse,
@@ -8,7 +9,13 @@ import type {
 
 export type ApiResult<T> =
   | { kind: 'ok'; data: T }
-  | { kind: 'error'; status: number; code?: AccountStatusErrorCode }
+  | {
+      kind: 'error';
+      status: number;
+      code?: AccountStatusErrorCode;
+      // The business-rule code of a 409 from the offer endpoints.
+      offerCode?: OfferErrorCode;
+    }
   | { kind: 'unreachable' };
 
 /** What the session logic needs from the API (the real one is in api.ts). */
