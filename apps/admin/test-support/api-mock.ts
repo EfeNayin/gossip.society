@@ -13,6 +13,8 @@ function create() {
     apiMe: vi.fn<typeof api.apiMe>(),
     apiLogin: vi.fn<typeof api.apiLogin>(),
     apiHealth: vi.fn<typeof api.apiHealth>(),
+    apiListVenues: vi.fn<typeof api.apiListVenues>(),
+    apiCreateVenue: vi.fn<typeof api.apiCreateVenue>(),
   };
 }
 

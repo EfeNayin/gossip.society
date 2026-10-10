@@ -211,6 +211,40 @@ API, kullanılmış bir refresh token'ı tekrar görünce oturumu iptal eder; co
 
 Gerçek tarayıcı akışı (giriş, yenileme, çıkış, cookie öznitelikleri, eşzamanlı yenileme/çıkış yarışları) Chrome (CDP) ve API'nin yanıtını geciktiren bir ara sunucuyla elle doğrulanmıştır; bu betikler depoda değildir, otomatik bir tarayıcı testi henüz yoktur.
 
+## Mekan sahibi, mekan ve ilk şube oluşturma (admin)
+
+Admin panelinde **Mekanlar** (`/venues`, sayfalı liste) ve **Yeni Mekan** (`/venues/new`) bulunur. Form tek işlemde yeni bir mekan sahibi hesabı (`VENUE_OWNER`, `ACTIVE`), ona bağlı mekanı ve ilk şubeyi oluşturur. Sahip daha sonra mobil uygulamada **mevcut girişle** (e-posta + başlangıç parolası) girer.
+
+### Başlangıç parolası (önemli)
+
+- **Parolayı admin belirler** (en az 12, en fazla 256 karakter; baş/son boşluklar kırpılmaz). Uygulama **e-posta veya mesaj göndermez**: parolayı mekan sahibine **uygulama dışında** siz iletirsiniz.
+- Parola yalnızca argon2id hash'i olarak saklanır ve **sonradan görüntülenemez**; form bunu açıkça yazar. Parola; yanıtlarda, listede, URL'de, başarı mesajında, hata durumunda Server Action yanıtıyla geri gönderilen form verisinde ve günlüklerde yer almaz (hata sonrası parola alanı boşalır).
+- Bu parola **geçici veya tek kullanımlık değildir** ve değiştirmeyi zorunlu kılan bir akış yoktur. **Parola değiştirme/sıfırlama ve e-posta daveti sonraki görevlerdir.**
+
+### API
+
+| Uç nokta | Rol | Açıklama |
+|---|---|---|
+| `POST /admin/venues` | `ADMIN` | `{ owner: {name, email, password}, venue: {name, description?}, branch: {name, city, address} }`. `201` ile güvenli mekan kaydı (sahip/şube özeti, parola veya hash yok). Rol ve durum her zaman sunucuda `VENUE_OWNER` / `ACTIVE` olarak atanır; istemcinin gönderdiği `role`, `status`, `ownerId` yok sayılır. |
+| `GET /admin/venues?page&pageSize` | `ADMIN` | Yeniden eskiye, kararlı sıralı (`createdAt`, ardından `id`); `pageSize` en fazla 50 (varsayılan 20), aşılırsa `400`. `total` / `totalPages` döner. |
+| `GET /venues/mine` | yalnızca `VENUE_OWNER` | Oturumdaki kullanıcının **kendi** mekan ve şubeleri; `ownerId` istemciden alınmaz. ADMIN, INFLUENCER ve VENUE_STAFF için bu uç nokta şimdilik kapalıdır (`403`). Sonraki mobil mekan ekranının temelidir. |
+
+- Hesap, mekan ve şube **tek transaction**'da oluşur; hata olursa hiçbiri kalmaz. Argon2 hash'i transaction'dan önce hesaplanır.
+- **E-posta** kırpılır ve küçük harfe çevrilir. Zaten kullanılan e-posta `409` + `EMAIL_ALREADY_EXISTS` döner; mevcut hesap **değiştirilmez**, mekan sahibi yapılmaz, ona mekan bağlanmaz. Eşzamanlı aynı e-posta isteklerinde veritabanı unique kısıtı korur: biri `201`, diğerleri `409` alır.
+- Sahip başına birden fazla mekan modeli korunur, ama **mevcut sahibe mekan ekleme** bu görevde yoktur. Ek şube, mekan düzenleme/silme, personel, abonelik/kota, ilan ve konum da yoktur.
+- Rol kontrolü sahiplik kontrolü değildir: `/venues/mine` hangi mekanların döneceğini oturumdaki kullanıcı kimliğiyle belirler.
+
+### Admin formunun davranışı
+
+- Her sayfa ve her işlem sunucuda, o istek için admin doğrulamasıyla başlar; durum değiştiren işlem aynı CSRF kontrolünden (zorunlu `Origin`) geçer. Token'lar tarayıcıya açılmaz.
+- Alan hataları, e-posta çakışması (e-posta alanında), yükleme durumu, boş liste, bağlantı hatası ve başarı Türkçe gösterilir. Çift gönderim engellenir; parola alanı maskelidir (isteğe bağlı Göster/Gizle).
+- **Yanıt kaybolursa otomatik tekrar yoktur**: istek bir hesap oluşturduğu için, ikinci bir deneme yinelenen kayıttan ayırt edilemez. Form "oluşturulup oluşturulmadığı bilinmiyor" der ve önce **mekan listesini kontrol etmenizi** önerir.
+- Başarıda listeye (`/venues?created=1`) yönlendirilir; form ve içindeki parola kaybolur.
+
+### Doğrulama
+
+`pnpm test` (HTTP testleri ve admin testleri) ve gerçek PostgreSQL üzerinde `pnpm --filter api test:integration` (transaction geri alma, unique kısıtı, 8 eşzamanlı aynı e-posta, e-posta yazım farkları, oluşturulan sahibin gerçek girişi, sahip yalıtımı, sayfalama; yalnızca `itest-` verileriyle) kullanılır. Admin akışı ayrıca gerçek Chrome ile üretim derlemesinde elle doğrulanmıştır (otomatik tarayıcı testi yoktur; CSRF reddi tarayıcıda değil birim testlerle doğrulanmıştır).
+
 ## Mobil uygulama girişi
 
 Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile girer ve **API'nin döndürdüğü kullanıcı kaydındaki role göre** sade bir ana ekran açar: `INFLUENCER`, `VENUE_OWNER`, `VENUE_STAFF`. Ekranlarda yalnızca ad, rol ve çıkış vardır (sahte ilan/istatistik/QR yok). `ADMIN` mobilde yetkili alan açmaz: giriş hemen `POST /auth/logout` ile iptal edilir, hiçbir şey saklanmaz ve "yönetim paneli web üzerinden kullanılır" mesajı gösterilir. Gezinti korumaları (`Stack.Protected`) yalnızca arayüzdür; her isteği API kendi yetki kontrolleriyle denetler. Geliştirme hesapları için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `owner@`, `staff@`, `influencer@gossip-society.example` kullanılabilir.
