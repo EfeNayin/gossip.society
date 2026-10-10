@@ -12,6 +12,7 @@ export default defineConfig({
       // Generous so unrelated tests sharing 127.0.0.1 never hit the limit;
       // the rate-limit spec overrides the throttler options explicitly.
       LOGIN_RATE_LIMIT: '1000',
+      REFRESH_RATE_LIMIT: '1000',
     },
   },
 });
