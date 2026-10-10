@@ -157,10 +157,48 @@ curl -X POST http://localhost:3000/auth/login -H 'content-type: application/json
   -d '{"email":"admin@gossip-society.example","password":"kendi-gelistirme-parolaniz"}'
 ```
 
+## Yönetim paneli girişi (admin web)
+
+`apps/admin` (Next.js) yalnızca **ACTIVE ADMIN** hesaplarının girebildiği bir giriş ekranı ve sade bir panel kabuğu içerir (kullanıcı adı, çıkış, API durumu). Geliştirme hesabı için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `admin@gossip-society.example` ve seçtiğiniz geliştirme parolası kullanılır.
+
+**Ortam ayarı:** `apps/admin/.env` içinde `API_URL` (örn. `http://localhost:3000`). Bu değer yalnızca sunucu tarafındadır, tarayıcıya gönderilmez; production'da zorunludur. Eski `NEXT_PUBLIC_API_URL` artık kullanılmaz. `env:setup` mevcut `.env` dosyalarını güncellemediği için dosya zaten varsa satırı elle ekleyin (geliştirmede `localhost:3000` varsayılır).
+
+### Nasıl çalışır
+
+- **Tarayıcı API ile hiç konuşmaz.** Giriş, çıkış ve yenileme Next.js sunucusunda (Server Action, `proxy.ts`, Route Handler) yapılır ve API'ye oradan gidilir; API için CORS gerekmez.
+- **Token'lar yalnızca HttpOnly cookie'dedir** (`gs_admin_at` erişim, `gs_admin_rt` yenileme): JavaScript okuyamaz, `localStorage` / `sessionStorage` kullanılmaz, HTML'e, istemci yanıtına ve günlüklere yazılmaz. Cookie'ler `SameSite=Lax`, `Path=/`; production'da `Secure` ve `__Host-` önekli. `Expires` değerleri API'nin bildirdiği token/oturum sürelerine eşittir, onları aşmaz.
+- **Yetki sunucuda kontrol edilir:** panel her render'da `GET /auth/me` çağırır; yalnızca `ACTIVE` ve `ADMIN` geçer. Rol veya durum değişirse (yükseltme, askıya alma, oturum iptali) bir sonraki istekte etkili olur. `proxy.ts` yalnızca iyimser yönlendirme yapar (cookie yoksa `/login`); yetkilendirme kararı değildir.
+- **Giriş:** `POST /auth/login`, ardından `GET /auth/me` ile rol doğrulanır. ADMIN olmayan veya `ACTIVE` olmayan hesap için cookie yazılmaz ve o girişte oluşan API oturumu `POST /auth/logout` ile iptal edilir. Türkçe mesajlar: hatalı bilgiler, `PENDING` / `SUSPENDED`, hız sınırı, bağlantı hatası, erişim yok.
+- **Çıkış:** `POST /auth/logout` ile sunucu oturumu iptal edilir, sonra cookie'ler silinir. API'ye ulaşılamazsa yerel cookie'ler yine silinir ama kullanıcıya sunucudaki oturumun iptal **edilemediği** söylenir (başarılı çıkış gibi gösterilmez).
+- **Cache:** kullanıcıya özel hiçbir veri `use cache` içine girmez; oturum okuyan her şey `Suspense` altında dinamik render edilir ve API çağrıları `cache: 'no-store'` kullanır.
+- **CSRF:** durum değiştiren işlemler yalnızca POST Server Action'dır. Next.js'in `Origin` / `Host` karşılaştırmasına ek olarak her action `Origin` başlığını **zorunlu** tutar (Next.js başlık hiç yoksa isteği uyarıyla geçirir), `Host` ile eşleşmesini ve `Sec-Fetch-Site: cross-site` olmamasını arar. Cookie'ler `SameSite=Lax` olduğu için siteler arası POST'larla gönderilmez. `GET /session/end` yalnızca cookie temizler ve `cross-site` isteklerde hiçbir şey yapmaz.
+
+### Access token yenileme ve eşzamanlılık
+
+Erişim token'ı (varsayılan 15 dk) dolunca yenileme **yalnızca `proxy.ts` içinde** yapılır (Server Component'ler cookie yazamaz; action ve route handler'lar proxy'den geçtiği için taze token ile çalışır). Her 401 körlemesine yenilenmez: yalnızca erişim cookie'si yok / süresi dolmuşsa (30 sn pay ile) ve yenileme cookie'si varsa, istek başına en fazla bir kez denenir. Yeni cookie'lerle bile API 401 verirse oturum bitmiştir; cookie'ler silinir ve girişe gidilir.
+
+API, kullanılmış bir refresh token'ı tekrar görünce oturumu iptal eder; cookie'ler tüm sekmelerde ortak olduğu için aynı token ile birden çok istek (sekmeler, RSC prefetch'leri) aynı anda gelebilir. Bu yüzden:
+
+1. Yenileme tek yerde (proxy) yapılır;
+2. aynı refresh token için eşzamanlı istekler **tek bir API çağrısını** paylaşır (single-flight);
+3. sonuç 15 saniye boyunca bellekte tutulur: yeni cookie'yi henüz almamış bir sekmenin eski token'la gelen geç isteği, tekrar kullanım sayılmak yerine aynı yeni çifti alır;
+4. yenileme `401` / `403` ile reddedilirse cookie'ler silinir ve girişe yönlendirilir; ağ hatası, `429` veya `5xx` ise cookie'ler korunur ve sayfa "Sunucuya ulaşılamıyor" durumunu gösterir.
+
+**Sınırlar:**
+
+- Bu kilit **süreç içidir**: tek bir Node örneği için çalışır. Admin birden çok örnek / load balancer arkasında çalışırsa aynı token'ı aynı anda iki örnek yenileyebilir ve API oturumu iptal eder. Çözüm sticky routing veya paylaşımlı kilit (örn. Redis) gerektirir; şimdilik eklenmedi.
+- 15 saniyelik pencerede yeni token çifti sunucu belleğinde durur ve o sürede eski token'ın tekrar sunulması iptal tetiklemez.
+- Pencereden sonra gelen eski token gerçek tekrar kullanım sayılır ve API oturumu iptal eder (meşru sahibin oturumu da kapanır, yeniden giriş gerekir). Yenileme yanıtı tarayıcıya ulaşmadan kaybolursa da kullanıcı yeniden giriş yapar.
+- Panelin sayfaları Suspense içinde akışla geldiği için oturumu geçersiz bir ziyaretçiye önce kısa bir "Yükleniyor…" gösterilir, sonra `/session/end` üzerinden girişe yönlendirilir; veri sızmaz.
+
+### Doğrulama
+
+`pnpm --filter admin test` sunucu tarafı mantığını (cookie ayarları, CSRF kontrolü, tek-uçuş/tolerans penceresi, API istemcisi, yönlendirme kararları) sınar. Gerçek tarayıcı akışı (giriş, yenileme, çıkış, cookie öznitelikleri) Chrome ile elle doğrulanmıştır; otomatik bir tarayıcı testi henüz yoktur.
+
 ## Açılacak adresler
 
 - API kontrolü: <http://localhost:3000/health> — beklenen yanıt `{"status":"ok","db":"up"}`.
-- Yönetim paneli: <http://localhost:3001> — API ve veritabanı bağlı görünmeli.
+- Yönetim paneli: <http://localhost:3001> — önce giriş ekranı açılır; ADMIN hesabıyla girince API ve veritabanı durumu görünmeli.
 - Mobil tarayıcı önizlemesi: <http://localhost:8081>. Expo terminalinde `w` de kullanılabilir. Ayrı bir mobil oturum gerekirse önce mevcut `pnpm dev` oturumunu durdurun; `pnpm --filter @gossip/shared build` sonrasında ayrı terminallerde `pnpm --filter api dev`, `pnpm --filter admin dev` ve `pnpm --filter mobile web` çalıştırın.
 
 `prototype/` bu adreslerdeki uygulamadan ayrıdır. Buradaki bağlantı ekranını görmek, prototip tasarımının aktarılmış olduğu anlamına gelmez.
