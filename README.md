@@ -53,6 +53,7 @@ pnpm dev
 ```
 
 - `env:setup`, dört `.env.example` dosyasından yerel ayarları oluşturur. Tekrar çalıştırıldığında mevcut ayarları **üzerine yazmaz**.
+- `apps/api/.env` içinde `JWT_SECRET` zorunludur (en az 32 karakter) ve boş bırakılırsa API başlamaz. Rastgele bir değer üretmek için (Mac ve Windows): `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`; çıktıyı `JWT_SECRET=` satırına yazın. `env:setup` mevcut `.env` dosyalarını güncellemediği için daha önce oluşturduysanız `.env.example` içindeki yeni satırları (`JWT_SECRET`, `JWT_ACCESS_TTL_SECONDS`, `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SECONDS`) elle ekleyin. Secret'ı commit etmeyin.
 - `infra:up`, servislerin sağlık kontrolleri başarılı olana kadar bekler.
 - `db:migrate`, repoda bulunan migration dosyalarını uygular. Başkasının branch'ini aldıktan sonra da bu komutu kullanın.
 - Veri modelini değiştirirken yeni migration oluşturmak için `pnpm --filter api exec prisma migrate dev --name meaningful_name` kullanın ve oluşan migration dosyasını PR'a ekleyin.
@@ -86,6 +87,36 @@ pnpm db:seed:dev
 ```
 
 Yalnızca yerel geliştirme içindir; hiçbir migration, CI veya deployment adımında otomatik çalışmaz ve `NODE_ENV=production` iken çalışmayı reddeder. Bir admin, bir mekan sahibi, bir personel, bir aktif ve bir onay bekleyen influencer, iki şubeli bir örnek mekan oluşturur. E-postalar `@gossip-society.example` uzantılıdır ve hesapların şifresi yoktur (giriş henüz yok). Tekrar çalıştırmak güvenlidir: eksik kayıtları ekler, mevcut kayıtları değiştirmez veya silmez (elle değiştirdiğiniz hesap durumu dahil).
+
+## Kimlik doğrulama (API)
+
+- `POST /auth/login` — `{ "email", "password" }`. E-posta kırpılır ve küçük harfe çevrilir; parola argon2 ile doğrulanır. Yanlış e-posta, yanlış parola ve parolası olmayan hesap aynı `401` yanıtını verir. Parola doğruysa ve hesap `PENDING` ya da `SUSPENDED` ise token verilmez; `403` ve `ACCOUNT_PENDING` / `ACCOUNT_SUSPENDED` kodu döner. `ACTIVE` hesap için kısa ömürlü access token ve güvenli kullanıcı bilgisi (`id`, `email`, `name`, `role`, `status`) döner.
+- `GET /auth/me` — `Authorization: Bearer <token>` ister. Token imzası ve süresi doğrulanır, kullanıcı **her istekte** veritabanından yüklenir. Silinen kullanıcı `401`, `ACTIVE` olmayan kullanıcı `403` alır; rol token'dan veya istemciden değil, veritabanındaki güncel kayıttan gelir.
+- Tüm endpoint'ler varsayılan olarak token ister. Herkese açık olanlar `@Public()` ile işaretlenir (`/health`, `/auth/login`). `@Roles(...)` yalnızca belirtilen rollere izin verir. İstemcinin gönderdiği `role` / `status` alanları yok sayılır.
+- **Rol kontrolü sahiplik kontrolü değildir.** `@Roles('VENUE_OWNER')` bir kullanıcının *herhangi* bir mekan sahibi olduğunu söyler, *o* mekanın sahibi olduğunu değil. Mekan/şube verisine erişen servisler sahipliği veya personel ilişkisini ayrıca kontrol etmelidir.
+- Giriş denemeleri istemci IP'sine göre sınırlanır (`LOGIN_RATE_LIMIT` deneme / `LOGIN_RATE_WINDOW_SECONDS` saniye); aşılırsa `429`. Sayaç API sürecinin belleğindedir: yeniden başlatmada sıfırlanır, birden çok API örneğinde paylaşılmaz. API bir proxy arkasına alınırsa gerçek istemci IP'si için proxy ayarı gerekir.
+- **Bilinen sınırlama:** refresh token ve çıkış (token iptali) yoktur. Access token (`JWT_ACCESS_TTL_SECONDS`, varsayılan 900 sn) bitince yeniden giriş gerekir; çıkış yapılsa bile token süresi dolana kadar geçerlidir, ancak hesap `ACTIVE` olmaktan çıkarsa reddedilir. Refresh ve çıkış sonraki görevdir. Kayıt başvurusu, parola sıfırlama ve davet de henüz yoktur.
+
+### Geliştirme hesaplarına parola verme (isteğe bağlı)
+
+`pnpm db:seed:dev` hesapları parolasız oluşturur. Giriş denemek için, seed'den sonra parolayı **ortam değişkeniyle** verin (en az 12 karakter; kodda sabit parola yoktur ve parola loglanmaz). Komutu aynı satırda ortam değişkeniyle çalıştırın, değeri kendiniz seçin:
+
+```sh
+# macOS (Terminal)
+DEV_SEED_PASSWORD='kendi-gelistirme-parolaniz' pnpm db:passwords:dev
+```
+
+```powershell
+# Windows (PowerShell)
+$env:DEV_SEED_PASSWORD = 'kendi-gelistirme-parolaniz'; pnpm db:passwords:dev; Remove-Item Env:DEV_SEED_PASSWORD
+```
+
+Yalnızca seed'deki beş e-postada ve `passwordHash` boşken argon2 hash'i yazar. Mevcut hash'leri, rolleri ve hesap durumlarını değiştirmez; tekrar çalıştırmak güvenlidir. `NODE_ENV=production` iken çalışmayı reddeder; migration, CI veya deployment içinde çalışmaz. `pnpm db:seed:dev` ve bu komut için `JWT_SECRET` gerekmez, yalnızca `DATABASE_URL` yeterlidir. Örnek giriş (bash/zsh):
+
+```sh
+curl -X POST http://localhost:3000/auth/login -H 'content-type: application/json' \
+  -d '{"email":"admin@gossip-society.example","password":"kendi-gelistirme-parolaniz"}'
+```
 
 ## Açılacak adresler
 
