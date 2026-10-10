@@ -53,7 +53,7 @@ pnpm dev
 ```
 
 - `env:setup`, dört `.env.example` dosyasından yerel ayarları oluşturur. Tekrar çalıştırıldığında mevcut ayarları **üzerine yazmaz**.
-- `apps/api/.env` içinde `JWT_SECRET` zorunludur (en az 32 karakter) ve boş bırakılırsa API başlamaz. Rastgele bir değer üretmek için (Mac ve Windows): `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`; çıktıyı `JWT_SECRET=` satırına yazın. `env:setup` mevcut `.env` dosyalarını güncellemediği için daha önce oluşturduysanız `.env.example` içindeki yeni satırları (`JWT_SECRET`, `JWT_ACCESS_TTL_SECONDS`, `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SECONDS`) elle ekleyin. Secret'ı commit etmeyin.
+- `apps/api/.env` içinde `JWT_SECRET` zorunludur (en az 32 karakter) ve boş bırakılırsa API başlamaz. Rastgele bir değer üretmek için (Mac ve Windows): `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`; çıktıyı `JWT_SECRET=` satırına yazın. `env:setup` mevcut `.env` dosyalarını güncellemediği için daha önce oluşturduysanız `.env.example` içindeki yeni satırları (`JWT_SECRET`, `JWT_ACCESS_TTL_SECONDS`, `SESSION_TTL_SECONDS`, `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SECONDS`, `REFRESH_RATE_LIMIT`, `REFRESH_RATE_WINDOW_SECONDS`; son altısının varsayılanı olduğu için yalnızca `JWT_SECRET` zorunludur) elle ekleyin. Secret'ı commit etmeyin.
 - `infra:up`, servislerin sağlık kontrolleri başarılı olana kadar bekler.
 - `db:migrate`, repoda bulunan migration dosyalarını uygular. Başkasının branch'ini aldıktan sonra da bu komutu kullanın.
 - Veri modelini değiştirirken yeni migration oluşturmak için `pnpm --filter api exec prisma migrate dev --name meaningful_name` kullanın ve oluşan migration dosyasını PR'a ekleyin.
@@ -90,12 +90,51 @@ Yalnızca yerel geliştirme içindir; hiçbir migration, CI veya deployment adı
 
 ## Kimlik doğrulama (API)
 
-- `POST /auth/login` — `{ "email", "password" }`. E-posta kırpılır ve küçük harfe çevrilir; parola argon2 ile doğrulanır. Yanlış e-posta, yanlış parola ve parolası olmayan hesap aynı `401` yanıtını verir. Parola doğruysa ve hesap `PENDING` ya da `SUSPENDED` ise token verilmez; `403` ve `ACCOUNT_PENDING` / `ACCOUNT_SUSPENDED` kodu döner. `ACTIVE` hesap için kısa ömürlü access token ve güvenli kullanıcı bilgisi (`id`, `email`, `name`, `role`, `status`) döner.
-- `GET /auth/me` — `Authorization: Bearer <token>` ister. Token imzası ve süresi doğrulanır, kullanıcı **her istekte** veritabanından yüklenir. Silinen kullanıcı `401`, `ACTIVE` olmayan kullanıcı `403` alır; rol token'dan veya istemciden değil, veritabanındaki güncel kayıttan gelir.
-- Tüm endpoint'ler varsayılan olarak token ister. Herkese açık olanlar `@Public()` ile işaretlenir (`/health`, `/auth/login`). `@Roles(...)` yalnızca belirtilen rollere izin verir. İstemcinin gönderdiği `role` / `status` alanları yok sayılır.
+Her başarılı giriş ayrı bir **oturum** (`AuthSession`) oluşturur. Oturumun mutlak bir son kullanma zamanı vardır (`SESSION_TTL_SECONDS`, varsayılan 7 gün) ve **yenilemeyle uzamaz**; süre dolunca yeniden giriş gerekir. Kısa ömürlü access token (`JWT_ACCESS_TTL_SECONDS`, varsayılan 15 dk) süresi dolunca refresh token ile yenilenir.
+
+- `POST /auth/login` — `{ "email", "password" }`. E-posta kırpılır ve küçük harfe çevrilir; parola argon2 ile doğrulanır. Yanlış e-posta, yanlış parola ve parolası olmayan hesap aynı `401` yanıtını verir. Parola doğruysa ve hesap `PENDING` ya da `SUSPENDED` ise oturum ve token oluşmaz; `403` ve `ACCOUNT_PENDING` / `ACCOUNT_SUSPENDED` kodu döner. `ACTIVE` hesap için `200` ve şu gövde döner:
+  ```json
+  {
+    "accessToken": "<JWT>",
+    "accessTokenExpiresAt": "2026-10-10T12:15:00.000Z",
+    "refreshToken": "<opak, 43 karakter>",
+    "refreshTokenExpiresAt": "2026-10-17T12:00:00.000Z",
+    "user": { "id": "…", "email": "…", "name": "…", "role": "…", "status": "…" }
+  }
+  ```
+  Zamanlar UTC ISO 8601'dir. `refreshTokenExpiresAt` oturumun mutlak bitişidir; `accessTokenExpiresAt` hiçbir zaman bunu aşmaz.
+- `POST /auth/refresh` — access token istemez; gövde `{ "refreshToken" }`. Başarıda `200` ve login ile aynı biçimde yeni bir access + refresh token çifti döner; eski refresh token tüketilmiş olur. Bilinmeyen, süresi dolmuş veya iptal edilmiş token için genel `401`. Oturumun kullanıcısı `ACTIVE` değilse `403` + `ACCOUNT_PENDING` / `ACCOUNT_SUSPENDED` döner ve oturum iptal edilir. **Daha önce kullanılmış bir refresh token tekrar sunulursa `401` döner ve o oturum tamamen iptal edilir** (yeni token'lar dahil). Bilinmeyen bir token hiçbir oturumu iptal etmez. Ayrı bir hız sınırı vardır (`REFRESH_RATE_LIMIT` / `REFRESH_RATE_WINDOW_SECONDS`).
+- `POST /auth/logout` — geçerli access token ister, **yalnızca o oturumu** iptal eder ve `204` döner. Sonrasında o oturumun access ve refresh token'ları reddedilir; aynı kullanıcının diğer oturumları etkilenmez. İstemcinin gövdede veya sorguda gönderdiği oturum/kullanıcı kimliği yok sayılır. Access token süresi dolmuşsa önce `POST /auth/refresh` ile yenilenmeli, sonra çıkış yapılmalıdır. Tüm cihazlardan çıkış ve oturum listesi bu aşamada yoktur.
+- `GET /auth/me` — `Authorization: Bearer <accessToken>` ister. İmza, algoritma, `sub` / `sid` / `exp` alanları ve süre doğrulanır; oturumun var olması, iptal edilmemiş ve süresi dolmamış olması ve token'daki kullanıcıya ait olması gerekir. Kullanıcı ve rolü **her istekte** veritabanından okunur: silinen kullanıcı `401`, `ACTIVE` olmayan kullanıcı `403` alır. Refresh token Bearer olarak kullanılamaz (JWT değildir). **`sid` içermeyen eski access token'lar `401` alır; oturum sistemine geçişte bir kez yeniden giriş gerekir.**
+- Tüm endpoint'ler varsayılan olarak access token ister. Herkese açık olanlar `@Public()` ile işaretlenir (`/health`, `/auth/login`, `/auth/refresh`). `@Roles(...)` yalnızca belirtilen rollere izin verir. İstemcinin gönderdiği `role` / `status` alanları yok sayılır.
 - **Rol kontrolü sahiplik kontrolü değildir.** `@Roles('VENUE_OWNER')` bir kullanıcının *herhangi* bir mekan sahibi olduğunu söyler, *o* mekanın sahibi olduğunu değil. Mekan/şube verisine erişen servisler sahipliği veya personel ilişkisini ayrıca kontrol etmelidir.
-- Giriş denemeleri istemci IP'sine göre sınırlanır (`LOGIN_RATE_LIMIT` deneme / `LOGIN_RATE_WINDOW_SECONDS` saniye); aşılırsa `429`. Sayaç API sürecinin belleğindedir: yeniden başlatmada sıfırlanır, birden çok API örneğinde paylaşılmaz. API bir proxy arkasına alınırsa gerçek istemci IP'si için proxy ayarı gerekir.
-- **Bilinen sınırlama:** refresh token ve çıkış (token iptali) yoktur. Access token (`JWT_ACCESS_TTL_SECONDS`, varsayılan 900 sn) bitince yeniden giriş gerekir; çıkış yapılsa bile token süresi dolana kadar geçerlidir, ancak hesap `ACTIVE` olmaktan çıkarsa reddedilir. Refresh ve çıkış sonraki görevdir. Kayıt başvurusu, parola sıfırlama ve davet de henüz yoktur.
+- Giriş ve yenileme denemeleri istemci IP'sine göre ayrı ayrı sınırlanır; aşılırsa `429`. Sayaç API sürecinin belleğindedir: yeniden başlatmada sıfırlanır, birden çok API örneğinde paylaşılmaz. API bir proxy arkasına alınırsa gerçek istemci IP'si için proxy ayarı gerekir.
+
+### Token politikaları
+
+- **Refresh token** JWT değildir: `crypto.randomBytes(32)` ile üretilen 256 bitlik rastgele değer (base64url). Veritabanına yalnızca SHA-256 hash'i yazılır; ham değer ne veritabanında ne de günlüklerde bulunur. Tek kullanımlıktır: her yenilemede tüketilir ve yenisi verilir. Tüketilmiş hash'ler oturumla birlikte silinene kadar saklanır, böylece eski bir token'ın tekrar sunulması fark edilir.
+- Bir oturumda aynı anda en fazla **bir** kullanılmamış refresh token olabilir (veritabanı kısıtı). Aynı token ile eşzamanlı iki yenileme isteğinden en fazla biri başarılı olur; diğeri tekrar kullanım sayılır ve oturumu iptal eder. Yenileme ile çıkış yarışırsa iptal edilmiş oturum asla yeniden etkinleşmez.
+- Oturum, token ve kullanıcı kontrolleri her istekte veritabanından yapılır; bu nedenle çıkış, askıya alma ve rol değişikliği access token süresi dolmasını beklemeden etkilidir.
+- Süresi dolmuş oturum satırlarını temizleyen bir iş henüz yoktur (sonraki iş).
+
+### İstemci entegrasyonu için notlar (bu PR yalnızca API sözleşmesini kapsar)
+
+- Mobil/admin tarafında token saklama (güvenli depolama, cookie vb.), ekranlar ve otomatik yenileme henüz yoktur; bunlar sonraki istemci entegrasyonunda tasarlanacaktır.
+- **İstemci aynı oturum için aynı anda yalnızca tek bir yenileme isteği yürütmelidir.** Birden çok istek aynı anda `401` alırsa hepsi ayrı ayrı yenilemeye kalkmamalı; tek bir yenileme beklenmeli, sonuçla yeniden denenmelidir. Aynı refresh token ile eşzamanlı iki istek tekrar kullanım sayılır ve oturumu iptal edebilir.
+- Yenilemeden gelen yeni refresh token'ı, eskisini kullanmadan önce kalıcı olarak saklayın. Yenileme yanıtı istemciye ulaşmadan bağlantı kopar ve yeni token kaybolursa eski token artık geçersizdir; kullanıcı yeniden giriş yapar.
+- `refreshTokenExpiresAt` geçtiğinde ya da yenileme `401` verdiğinde kullanıcı giriş ekranına yönlendirilmelidir; `403` + `ACCOUNT_*` kodu hesap durumu ekranını gösterir.
+
+### Entegrasyon testleri (PostgreSQL)
+
+`pnpm test` veritabanı gerektirmez. Yenileme/çıkış yarışlarını ve transaction davranışını gerçek PostgreSQL üzerinde sınayan testler ayrıdır ve CI'da otomatik çalışmaz:
+
+```sh
+pnpm infra:up
+pnpm db:migrate
+pnpm --filter api test:integration
+```
+
+Testler kendi `itest-…@gossip-society.example` kullanıcılarını oluşturur ve yalnızca onları siler; seed hesaplarına dokunmaz. `apps/api/.env` içindeki `DATABASE_URL` kullanılır.
 
 ### Geliştirme hesaplarına parola verme (isteğe bağlı)
 
