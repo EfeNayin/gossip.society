@@ -52,7 +52,43 @@ export interface FakeRefreshToken {
   usedAt: Date | null;
 }
 
+export interface FakeVenue {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FakeBranch {
+  id: string;
+  venueId: string;
+  name: string;
+  city: string;
+  address: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 type Where = Record<string, unknown>;
+
+type OrderBy = Record<string, 'asc' | 'desc'>[];
+
+function sortRows<T extends object>(rows: T[], orderBy: OrderBy = []): T[] {
+  return [...rows].sort((a, b) => {
+    for (const rule of orderBy) {
+      const [[key, direction]] = Object.entries(rule) as [
+        [string, 'asc' | 'desc'],
+      ];
+      const left = (a as Record<string, unknown>)[key] as string | Date;
+      const right = (b as Record<string, unknown>)[key] as string | Date;
+      if (left < right) return direction === 'asc' ? -1 : 1;
+      if (left > right) return direction === 'asc' ? 1 : -1;
+    }
+    return 0;
+  });
+}
 
 // Supports the conditions the auth code uses: equality, null and { gt }.
 function matches(row: object, where: Where): boolean {
@@ -75,6 +111,29 @@ export function createFakePrisma() {
   const users = new Map<string, FakeUser>();
   const sessions = new Map<string, FakeSession>();
   const refreshTokens = new Map<string, FakeRefreshToken>();
+  const venues = new Map<string, FakeVenue>();
+  const branches = new Map<string, FakeBranch>();
+  // Each created row gets a later timestamp, so ordering tests are deterministic.
+  let clock = Date.UTC(2026, 9, 10, 12, 0, 0);
+  const tick = () => new Date((clock += 1000));
+  // Tests set this to make the next venue insert fail (after the user insert).
+  const failures: { venueCreate?: Error } = {};
+
+  const venueView = (
+    venue: FakeVenue,
+    include: { owner?: unknown; branches?: { orderBy?: OrderBy } },
+  ) => ({
+    ...venue,
+    ...(include.owner ? { owner: users.get(venue.ownerId) } : {}),
+    ...(include.branches
+      ? {
+          branches: sortRows(
+            [...branches.values()].filter((b) => b.venueId === venue.id),
+            include.branches.orderBy,
+          ),
+        }
+      : {}),
+  });
 
   const updateMany = <T extends object>(
     rows: Map<string, T>,
@@ -95,6 +154,9 @@ export function createFakePrisma() {
     fn: (tx: typeof models) => Promise<R>,
   ): Promise<R> => {
     const snapshot = {
+      users: [...users].map(([id, row]) => [id, { ...row }] as const),
+      venues: [...venues].map(([id, row]) => [id, { ...row }] as const),
+      branches: [...branches].map(([id, row]) => [id, { ...row }] as const),
       sessions: [...sessions].map(([id, row]) => [id, { ...row }] as const),
       refreshTokens: [...refreshTokens].map(
         ([id, row]) => [id, { ...row }] as const,
@@ -103,6 +165,12 @@ export function createFakePrisma() {
     try {
       return await fn(models);
     } catch (error) {
+      users.clear();
+      for (const [id, row] of snapshot.users) users.set(id, row);
+      venues.clear();
+      for (const [id, row] of snapshot.venues) venues.set(id, row);
+      branches.clear();
+      for (const [id, row] of snapshot.branches) branches.set(id, row);
       sessions.clear();
       for (const [id, row] of snapshot.sessions) sessions.set(id, row);
       refreshTokens.clear();
@@ -122,6 +190,85 @@ export function createFakePrisma() {
         if (where.id) return users.get(where.id) ?? null;
         return [...users.values()].find((u) => u.email === where.email) ?? null;
       },
+      create: async ({
+        data,
+      }: {
+        data: Pick<
+          FakeUser,
+          'email' | 'name' | 'role' | 'status' | 'passwordHash'
+        >;
+      }) => {
+        if ([...users.values()].some((u) => u.email === data.email)) {
+          // What Prisma throws for the unique e-mail constraint.
+          throw Object.assign(new Error('Unique constraint failed on email'), {
+            code: 'P2002',
+          });
+        }
+        const user: FakeUser = {
+          id: randomUUID(),
+          createdAt: tick(),
+          updatedAt: tick(),
+          ...data,
+        };
+        users.set(user.id, user);
+        return user;
+      },
+    },
+    venue: {
+      create: async ({
+        data,
+        include,
+      }: {
+        data: {
+          name: string;
+          description: string | null;
+          ownerId: string;
+          branches: { create: Pick<FakeBranch, 'name' | 'city' | 'address'> };
+        };
+        include: Parameters<typeof venueView>[1];
+      }) => {
+        if (failures.venueCreate) throw failures.venueCreate;
+        const venue: FakeVenue = {
+          id: randomUUID(),
+          name: data.name,
+          description: data.description,
+          ownerId: data.ownerId,
+          createdAt: tick(),
+          updatedAt: tick(),
+        };
+        venues.set(venue.id, venue);
+        const branch: FakeBranch = {
+          id: randomUUID(),
+          venueId: venue.id,
+          createdAt: tick(),
+          updatedAt: tick(),
+          ...data.branches.create,
+        };
+        branches.set(branch.id, branch);
+        return venueView(venue, include);
+      },
+      findMany: async ({
+        where,
+        orderBy,
+        skip = 0,
+        take,
+        include,
+      }: {
+        where?: Where;
+        orderBy?: OrderBy;
+        skip?: number;
+        take?: number;
+        include: Parameters<typeof venueView>[1];
+      }) => {
+        const rows = sortRows(
+          [...venues.values()].filter((v) => !where || matches(v, where)),
+          orderBy,
+        );
+        return rows
+          .slice(skip, take === undefined ? undefined : skip + take)
+          .map((v) => venueView(v, include));
+      },
+      count: async () => venues.size,
     },
     authSession: {
       create: async ({
@@ -183,7 +330,7 @@ export function createFakePrisma() {
     $queryRaw: async () => [{ '?column?': 1 }],
   };
   const prisma = { ...models, $transaction };
-  return { users, sessions, refreshTokens, prisma };
+  return { users, sessions, refreshTokens, venues, branches, failures, prisma };
 }
 
 /** Creates a live session for a user and returns a matching signed access token. */
