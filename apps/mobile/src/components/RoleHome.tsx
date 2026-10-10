@@ -33,7 +33,9 @@ export function RoleHome({ description }: { description: string }) {
         <Card>
           <Text style={styles.greeting}>Merhaba, {user?.name}</Text>
           {user ? (
-            <Text style={styles.role}>{roleLabels[user.role]}</Text>
+            <Text style={styles.role}>
+              {roleLabels[user.role].toLocaleUpperCase('tr-TR')}
+            </Text>
           ) : null}
           <Text style={styles.description}>{description}</Text>
         </Card>
@@ -59,7 +61,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
-    textTransform: 'uppercase',
   },
   description: { color: colors.muted, fontSize: 14, lineHeight: 20 },
 });
