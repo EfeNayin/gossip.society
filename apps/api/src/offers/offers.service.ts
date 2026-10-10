@@ -18,7 +18,9 @@ import {
   type OwnerOfferList,
   type UpdateOfferRequest,
 } from '@gossip/shared';
+import { lockVenue } from '../common/row-locks.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { visibleAt } from './offer-visibility.js';
 import {
   branchNotFound,
   offerConflict,
@@ -50,15 +52,6 @@ const discoverInclude = {
     },
   },
 } as const;
-
-// Visible to influencers: PUBLISHED and valid right now. ONE definition for
-// the list and the detail, so an offer that is suspended or has ended after
-// the list was read can't be opened either. `now` is read once per request.
-const visibleAt = (now: Date) => ({
-  status: 'PUBLISHED' as const,
-  validFrom: { lte: now },
-  validUntil: { gt: now },
-});
 
 const adminInclude = {
   branch: {
@@ -174,9 +167,10 @@ const dates = ({
 }) => ({ validFrom: new Date(validFrom), validUntil: new Date(validUntil) });
 
 /**
- * Locking. Everything that changes a draft or counts toward a venue's quota
- * (publish, edit) takes ONE lock first: the venue's row, FOR UPDATE, inside its
- * transaction. They therefore run one after another per venue, and each decides
+ * Locking (the whole order is documented in common/row-locks.ts).
+ * Everything that changes a draft or counts toward a venue's quota (publish,
+ * edit, and approving a collaboration) takes ONE lock first: the venue's row,
+ * FOR UPDATE, inside its transaction. They therefore run one after another per venue, and each decides
  * on data read after the lock. Order: venue row first, then offer rows. No
  * transaction takes a second venue lock or an offer row before the venue, so
  * there is no cycle and no deadlock. Suspending (admin) is a single conditional
@@ -378,7 +372,7 @@ export class OffersService {
   ): Promise<OwnerOffer> {
     const row = await this.prisma.$transaction(async (tx) => {
       const venueId = await this.ownedOfferVenueId(tx, ownerId, id);
-      await this.lockVenue(tx, venueId);
+      await lockVenue(tx, venueId);
 
       // Read again, now that this request holds the lock.
       const current = await tx.offer.findFirst({
@@ -415,7 +409,7 @@ export class OffersService {
   async publish(ownerId: string, id: string): Promise<OwnerOffer> {
     const row = await this.prisma.$transaction(async (tx) => {
       const venueId = await this.ownedOfferVenueId(tx, ownerId, id);
-      await this.lockVenue(tx, venueId);
+      await lockVenue(tx, venueId);
 
       // From here on everything is read after the lock, with one clock reading.
       const now = new Date();
@@ -470,13 +464,6 @@ export class OffersService {
     });
     if (!found) throw offerNotFound();
     return found.branch.venueId;
-  }
-
-  private async lockVenue(
-    tx: Pick<PrismaService, '$queryRaw'>,
-    venueId: string,
-  ): Promise<void> {
-    await tx.$queryRaw`SELECT id FROM "Venue" WHERE id = ${venueId}::uuid FOR UPDATE`;
   }
 
   // --- influencer discovery -------------------------------------------------
