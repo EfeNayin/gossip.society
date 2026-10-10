@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SERVICE_VALUE_KURUS } from '@gossip/shared';
-import { formatKurusAsTl, kurusToInput, parseTlToKurus } from './money';
+import {
+  formatCount,
+  formatKurusAsTl,
+  kurusToInput,
+  parseTlToKurus,
+} from './money';
 
 describe('parseTlToKurus', () => {
   it.each([
@@ -91,5 +96,17 @@ describe('formatKurusAsTl / kurusToInput', () => {
   ])('puts %i kuruş back into the input as %s', (kurus, text) => {
     expect(kurusToInput(kurus)).toBe(text);
     expect(parseTlToKurus(kurusToInput(kurus))).toEqual({ ok: true, kurus });
+  });
+});
+
+describe('formatCount', () => {
+  it.each([
+    [0, '0'],
+    [999, '999'],
+    [1000, '1.000'],
+    [12500, '12.500'],
+    [100_000_000, '100.000.000'],
+  ])('%d -> %s', (value, text) => {
+    expect(formatCount(value)).toBe(text);
   });
 });
