@@ -3,5 +3,5 @@
   "compilerOptions": {
     "outDir": "./dist/seed"
   },
-  "include": ["prisma/seed-dev.ts"]
+  "include": ["prisma/seed-dev.ts", "prisma/set-dev-passwords.ts"]
 }
