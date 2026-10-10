@@ -157,10 +157,64 @@ curl -X POST http://localhost:3000/auth/login -H 'content-type: application/json
   -d '{"email":"admin@gossip-society.example","password":"kendi-gelistirme-parolaniz"}'
 ```
 
+## Yönetim paneli girişi (admin web)
+
+`apps/admin` (Next.js) yalnızca **ACTIVE ADMIN** hesaplarının girebildiği bir giriş ekranı ve sade bir panel kabuğu içerir (kullanıcı adı, çıkış, API durumu). Geliştirme hesabı için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `admin@gossip-society.example` ve seçtiğiniz geliştirme parolası kullanılır.
+
+**Ortam ayarı:** `apps/admin/.env` içinde `API_URL` (örn. `http://localhost:3000`). Bu değer yalnızca sunucu tarafındadır, tarayıcıya gönderilmez; production'da zorunludur. Eski `NEXT_PUBLIC_API_URL` artık kullanılmaz. `env:setup` mevcut `.env` dosyalarını güncellemediği için dosya zaten varsa satırı elle ekleyin (geliştirmede `localhost:3000` varsayılır).
+
+### Nasıl çalışır
+
+- **Tarayıcı API ile hiç konuşmaz.** Giriş, çıkış ve yenileme Next.js sunucusunda (Server Action ve `proxy.ts`) yapılır ve API'ye oradan gidilir; API için CORS gerekmez.
+- **Token'lar yalnızca HttpOnly cookie'dedir** (`gs_admin_at` erişim, `gs_admin_rt` yenileme): JavaScript okuyamaz, `localStorage` / `sessionStorage` kullanılmaz, HTML'e, istemci yanıtına ve günlüklere yazılmaz. Cookie'ler `SameSite=Lax`, `Path=/`; production'da `Secure` ve `__Host-` önekli. `Expires` değerleri API'nin bildirdiği token/oturum sürelerine eşittir, onları aşmaz.
+- **Yetki sunucuda kontrol edilir:** panel her render'da `GET /auth/me` çağırır; yalnızca `ACTIVE` ve `ADMIN` geçer. Rol veya durum değişirse (yükseltme, askıya alma, oturum iptali) bir sonraki istekte etkili olur. `proxy.ts` yalnızca iyimser yönlendirme yapar (cookie yoksa `/login`); yetkilendirme kararı değildir.
+- **Giriş:** `POST /auth/login`, ardından `GET /auth/me` ile rol doğrulanır. ADMIN olmayan veya `ACTIVE` olmayan hesap için cookie yazılmaz ve o girişte oluşan API oturumu `POST /auth/logout` ile iptal edilir. Türkçe mesajlar: hatalı bilgiler, `PENDING` / `SUSPENDED`, hız sınırı, bağlantı hatası, erişim yok.
+- **Çıkış:** önce oturum bu süreçte "sona erdi" diye işaretlenir (aşağıya bakın), sonra `POST /auth/logout` ile sunucu oturumu iptal edilir ve cookie'ler silinir. API'ye ulaşılamazsa yerel cookie'ler yine silinir ama kullanıcıya sunucudaki oturumun iptal **edilemediği** söylenir (başarılı çıkış gibi gösterilmez).
+- **Geçersiz oturumu sonlandırma (`/session/end`):** panel kullanılamaz bir oturum bulursa (süresi dolmuş, iptal edilmiş, ADMIN değil, hesap etkin değil) `/session/end` sayfasına yönlendirir. Bu sayfa **GET ile yalnızca okur**: cookie yazmaz, silmez, API'de çıkış yapmaz; geçerli bir ADMIN oturumunda panele geri yollar. Sonlandırma, sayfadaki formun otomatik gönderdiği **POST Server Action** ile yapılır (aynı CSRF kontrolüyle): tarayıcının o anki cookie'lerine bakar, gerçekten kullanılamaz durumdaysa API'de best-effort çıkış yapar, cookie'leri siler ve `/login?reason=…` adresine gider. Giriş sayfasında cookie yoksa kalınır, bu yüzden yönlendirme döngüsü oluşmaz; JavaScript kapalıysa sayfadaki düğme aynı POST'u yapar.
+- **Cache:** kullanıcıya özel hiçbir veri `use cache` içine girmez; oturum okuyan her şey `Suspense` altında dinamik render edilir ve API çağrıları `cache: 'no-store'` kullanır.
+- **CSRF:** durum değiştiren işlemler yalnızca POST Server Action'dır. Next.js'in `Origin` / `Host` karşılaştırmasına ek olarak her action `Origin` başlığını **zorunlu** tutar (Next.js başlık hiç yoksa isteği uyarıyla geçirir), `Host` ile eşleşmesini ve `Sec-Fetch-Site: cross-site` olmamasını arar. Cookie'ler `SameSite=Lax` olduğu için siteler arası POST'larla gönderilmez. Oturumu değiştiren hiçbir GET yoktur; `/session/end` GET'i yan etkisizdir ve cookie temizleme / API çıkışı yalnızca bu kontrolden geçen POST'tadır.
+
+### Access token yenileme ve eşzamanlılık
+
+Erişim token'ı (varsayılan 15 dk) dolunca yenileme **yalnızca `proxy.ts` içinde** yapılır (Server Component'ler cookie yazamaz; action ve route handler'lar proxy'den geçtiği için taze token ile çalışır). Her 401 körlemesine yenilenmez: yalnızca erişim cookie'si yok / süresi dolmuşsa (30 sn pay ile) ve yenileme cookie'si varsa, istek başına en fazla bir kez denenir. Yeni cookie'lerle bile API 401 verirse oturum bitmiştir ve girişe gidilir (aşağıdaki "proxy cookie silmez" kuralına bakın).
+
+API, kullanılmış bir refresh token'ı tekrar görünce oturumu iptal eder; cookie'ler tüm sekmelerde ortak olduğu için aynı token ile birden çok istek (sekmeler, RSC prefetch'leri) aynı anda gelebilir. Bu yüzden:
+
+1. Yenileme tek yerde (proxy) yapılır;
+2. aynı refresh token için eşzamanlı istekler **tek bir API çağrısını** paylaşır (single-flight);
+3. sonuç 15 saniye boyunca bellekte tutulur: yeni cookie'yi henüz almamış bir sekmenin eski token'la gelen geç isteği, tekrar kullanım sayılmak yerine aynı yeni çifti alır;
+4. ağ hatası, `429` veya `5xx` olursa cookie'ler korunur ve sayfa "Sunucuya ulaşılamıyor" durumunu gösterir.
+
+**Çıkış ile yenilemenin birlikte çalışması.** Çıkıştan sonra önbellekteki veya devam eden bir yenileme sonucu cookie'leri geri yazmamalı; ayrıca çıkıştan sonra yeniden giriş yapılmışsa eski bir yanıt yeni oturumun cookie'lerinin üzerine yazmamalıdır. Bunun için:
+
+- Koordinatör her girişin refresh token zincirini (**oturum soyağacı**) bilir; çıkış bu soyağacını "sona erdi" diye işaretler (`end()`). İşaret yalnızca Map kaydını silmek değildir: devam eden ve önbellekteki sonuçlar da `ended` döner, soyağacındaki her token (eski ve yeni) için. Yeni bir giriş ayrı bir soyağacıdır, etkilenmez.
+- Proxy, yenileme yanıtını cookie'ye yazmadan hemen önce (aynı senkron adımda) soyağacının bitip bitmediğini yeniden kontrol eder; bu adımın arasına bir çıkış giremez. Çıkış action'ı API'ye gitmeden **önce** soyağacını bitirir.
+- **Proxy cookie silmez ve reddedilen/bitmiş oturumda cookie yazmaz.** Yalnızca yenileme başarılıysa ve oturum bitmemişse cookie yazar; aksi halde isteği "oturum yok" bilgisiyle sayfaya iletir. Cookie silme yalnızca tarayıcının *o anki* cookie'lerini gören Server Action'dadır. Böylece eski bir isteğin yanıtı, sonradan yapılmış bir girişin cookie'lerini silemez.
+- **Paylaşılan durum `globalThis` üzerindedir.** Next.js `proxy.ts` ile Server Action'ı ayrı paketler halinde derler; bir üretim derlemesinde ikisinin modül örneklerinin **farklı** olduğu ölçüldü (aynı süreç, ayrı modül kopyaları). Modül düzeyinde bir koordinatör bu yüzden proxy ile logout arasında paylaşılmaz; koordinatör `globalThis[Symbol.for(...)]` üzerinde tek örnek olarak tutulur. Gerçek sunucuda modül düzeyine döndürüldüğünde üç çıkış senaryosunun üçü de başarısız olur, `globalThis` ile geçer.
+
+**Sınırlar:**
+
+- Bu durum **süreç içidir**: tek bir Node örneği için çalışır. Admin birden çok örnek / load balancer arkasında çalışırsa aynı token'ı aynı anda iki örnek yenileyebilir ve API oturumu iptal eder; bir örnekte yapılan çıkışı diğeri de göremez. Çözüm sticky routing veya paylaşımlı kilit/depo (örn. Redis) gerektirir; şimdilik eklenmedi.
+- Bitmiş oturum işareti 10 dakika tutulur; daha geç gelen eski bir token API'ye gider ve oturum zaten iptal edildiği için reddedilir. Çıkış sırasında API'ye ulaşılamamışsa sunucu oturumu açık kalır ve bu süreden sonra gelen eski bir istek onu yeniden kullanabilir.
+- Zaten tarayıcıya gönderilmiş bir yanıtı geri almak mümkün değildir: çıkıştan **önce** üretilmiş bir yenileme yanıtı çıkış yanıtından **sonra** tarayıcıya ulaşırsa yeni cookie'ler yazılır; ama o oturum sunucuda iptal edilmiştir, sonraki istekte `401` alır ve `/session/end` ile temizlenir.
+- 15 saniyelik pencerede yeni token çifti sunucu belleğinde durur ve o sürede eski token'ın tekrar sunulması iptal tetiklemez.
+- Pencereden sonra gelen eski token gerçek tekrar kullanım sayılır ve API oturumu iptal eder (meşru sahibin oturumu da kapanır, yeniden giriş gerekir). Yenileme yanıtı tarayıcıya ulaşmadan kaybolursa da kullanıcı yeniden giriş yapar.
+- Panelin sayfaları Suspense içinde akışla geldiği için oturumu geçersiz bir ziyaretçiye önce kısa bir "Yükleniyor…" gösterilir, sonra `/session/end`'e yönlendirilir; veri sızmaz.
+
+### Doğrulama
+
+`pnpm --filter admin test`:
+
+- yardımcı modüller (cookie ayarları, CSRF kontrolü, koordinatör, API istemcisi, yönlendirme kararları);
+- **gerçek `proxy.ts` + Server Action bağlantısı** (`app/session-flow.test.ts`): proxy ve action'lar, Next.js'teki gibi ayrı modül kayıtlarından yüklenir; sahte bir API ve cookie jar'ı olan bir "tarayıcı" ile başarılı yenileme → çıkış → geç gelen eski token, çıkış sırasında devam eden yenileme, çıkıştan sonra yeniden giriş ve yönlendirme döngüsü olmaması sınanır. Backend oturumunun iptal kalması ve tarayıcı cookie'lerinin yeniden kurulmaması ayrı ayrı doğrulanır;
+- Server Action'ların CSRF kontrolü (Origin yok / cross-site / başka host) ve `/session/end` GET'inin yan etkisizliği (`app/actions/auth.test.ts`, `app/session/end/session-end.test.ts`).
+
+Gerçek tarayıcı akışı (giriş, yenileme, çıkış, cookie öznitelikleri, eşzamanlı yenileme/çıkış yarışları) Chrome (CDP) ve API'nin yanıtını geciktiren bir ara sunucuyla elle doğrulanmıştır; bu betikler depoda değildir, otomatik bir tarayıcı testi henüz yoktur.
+
 ## Açılacak adresler
 
 - API kontrolü: <http://localhost:3000/health> — beklenen yanıt `{"status":"ok","db":"up"}`.
-- Yönetim paneli: <http://localhost:3001> — API ve veritabanı bağlı görünmeli.
+- Yönetim paneli: <http://localhost:3001> — önce giriş ekranı açılır; ADMIN hesabıyla girince API ve veritabanı durumu görünmeli.
 - Mobil tarayıcı önizlemesi: <http://localhost:8081>. Expo terminalinde `w` de kullanılabilir. Ayrı bir mobil oturum gerekirse önce mevcut `pnpm dev` oturumunu durdurun; `pnpm --filter @gossip/shared build` sonrasında ayrı terminallerde `pnpm --filter api dev`, `pnpm --filter admin dev` ve `pnpm --filter mobile web` çalıştırın.
 
 `prototype/` bu adreslerdeki uygulamadan ayrıdır. Buradaki bağlantı ekranını görmek, prototip tasarımının aktarılmış olduğu anlamına gelmez.
