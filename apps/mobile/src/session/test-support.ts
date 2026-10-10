@@ -99,6 +99,12 @@ export class FakeApi implements AuthApi {
     };
   }
 
+  /** Who an access token belongs to (the API's view), or undefined. */
+  userForAccessToken(token: string) {
+    const session = this.byAccess(token);
+    return session && !session.revoked ? session.user : undefined;
+  }
+
   private byAccess(token: string) {
     return this.sessions.find((s) => s.accessTokens.has(token));
   }
