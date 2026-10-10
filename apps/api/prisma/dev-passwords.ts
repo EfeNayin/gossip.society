@@ -1,4 +1,5 @@
 import { hash } from '@node-rs/argon2';
+import { MAX_PASSWORD_LENGTH } from '@gossip/shared';
 import { seedUserEmails } from './seed-users.js';
 
 interface PasswordClient {
@@ -22,9 +23,12 @@ export async function setDevPasswords(
   prisma: PasswordClient,
   password: string,
 ) {
-  if (password.length < MIN_DEV_PASSWORD_LENGTH) {
+  if (
+    password.length < MIN_DEV_PASSWORD_LENGTH ||
+    password.length > MAX_PASSWORD_LENGTH
+  ) {
     throw new Error(
-      `DEV_SEED_PASSWORD must be at least ${MIN_DEV_PASSWORD_LENGTH} characters.`,
+      `DEV_SEED_PASSWORD must be ${MIN_DEV_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
     );
   }
 

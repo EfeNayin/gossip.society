@@ -241,6 +241,15 @@ describe('auth over HTTP', () => {
       expect((await get('/auth/me', forged)).status).toBe(401);
     });
 
+    it('rejects a correctly signed token that has no exp', async () => {
+      // A JwtService without signOptions.expiresIn signs tokens with no exp.
+      const neverExpires = await new JwtService({
+        secret: process.env.JWT_SECRET,
+      }).signAsync({}, { subject: ids.admin });
+      expect(jwt.decode<{ exp?: number }>(neverExpires).exp).toBeUndefined();
+      expect((await get('/auth/me', neverExpires)).status).toBe(401);
+    });
+
     it('rejects an unsigned (alg none) token', async () => {
       const part = (value: object) =>
         Buffer.from(JSON.stringify(value)).toString('base64url');

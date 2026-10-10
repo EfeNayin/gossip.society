@@ -13,7 +13,13 @@ import { assertAccountActive } from './account-status.js';
 import type { AuthenticatedRequest } from './auth.types.js';
 import { IS_PUBLIC_KEY } from './public.decorator.js';
 
-const tokenPayloadSchema = z.object({ sub: z.guid() });
+// jsonwebtoken only checks `exp` when it is present, so require it here: a
+// token that never expires must not be accepted. The library still enforces
+// the expiry itself.
+const tokenPayloadSchema = z.object({
+  sub: z.guid(),
+  exp: z.number().int().positive(),
+});
 
 /**
  * Global guard: every route needs a valid Bearer access token unless it is

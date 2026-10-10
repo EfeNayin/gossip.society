@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { userRoleSchema, userStatusSchema } from './user';
 
+// Upper bound for passwords, shared by login and the dev password command.
+// It keeps absurdly long input away from the password hasher.
+export const MAX_PASSWORD_LENGTH = 256;
+
 // Unknown keys (e.g. a client-sent `role` or `status`) are stripped, never read.
 export const loginRequestSchema = z.object({
   email: z.string().trim().toLowerCase().pipe(z.email()),
-  // The upper bound keeps absurdly long input away from the password hasher.
-  password: z.string().min(1).max(256),
+  password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
 });
 
 export type LoginRequest = z.infer<typeof loginRequestSchema>;

@@ -1,4 +1,5 @@
 import { verify } from '@node-rs/argon2';
+import { MAX_PASSWORD_LENGTH } from '@gossip/shared';
 import {
   MIN_DEV_PASSWORD_LENGTH,
   setDevPasswords,
@@ -110,10 +111,46 @@ describe('setDevPasswords', () => {
     expect(rows).toEqual(afterFirst);
   });
 
+  it('accepts a password of exactly the maximum login length', async () => {
+    const rows: Row[] = [
+      {
+        email: seedUserEmails[0]!,
+        role: 'ADMIN',
+        status: 'ACTIVE',
+        passwordHash: null,
+      },
+    ];
+    const password = 'x'.repeat(MAX_PASSWORD_LENGTH);
+
+    const result = await setDevPasswords(createFakePrisma(rows), password);
+
+    expect(result.updated).toBe(1);
+    expect(await verify(rows[0]!.passwordHash!, password)).toBe(true);
+  });
+
+  it('refuses a password longer than login accepts, without touching the database', async () => {
+    const rows: Row[] = seedUserEmails.map((email) => ({
+      email,
+      role: 'INFLUENCER',
+      status: 'ACTIVE',
+      passwordHash: null,
+    }));
+    const before = structuredClone(rows);
+    const prisma = createFakePrisma(rows);
+    const updateMany = vi.spyOn(prisma.user, 'updateMany');
+
+    await expect(
+      setDevPasswords(prisma, 'x'.repeat(MAX_PASSWORD_LENGTH + 1)),
+    ).rejects.toThrow(/12-256/);
+
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(rows).toEqual(before);
+  });
+
   it('refuses a short password', async () => {
     const prisma = createFakePrisma([]);
     await expect(
       setDevPasswords(prisma, 'x'.repeat(MIN_DEV_PASSWORD_LENGTH - 1)),
-    ).rejects.toThrow(/at least/);
+    ).rejects.toThrow(/12-256/);
   });
 });
