@@ -25,12 +25,34 @@ export const safeUserSchema = z.object({
 
 export type SafeUser = z.infer<typeof safeUserSchema>;
 
-export const loginResponseSchema = z.object({
+// Opaque tokens as issued by login and refresh. Expiry times are UTC ISO
+// strings. refreshTokenExpiresAt is the session's absolute end: refreshing
+// never extends it, and accessTokenExpiresAt never goes past it.
+export const authTokensSchema = z.object({
   accessToken: z.string(),
+  accessTokenExpiresAt: z.iso.datetime(),
+  refreshToken: z.string(),
+  refreshTokenExpiresAt: z.iso.datetime(),
+});
+
+export type AuthTokens = z.infer<typeof authTokensSchema>;
+
+export const loginResponseSchema = authTokensSchema.extend({
   user: safeUserSchema,
 });
 
 export type LoginResponse = z.infer<typeof loginResponseSchema>;
+
+export const refreshRequestSchema = z.object({
+  refreshToken: z.string().min(1).max(512),
+});
+
+export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
+
+// Same shape as login: a new token pair plus the current safe user.
+export const refreshResponseSchema = loginResponseSchema;
+
+export type RefreshResponse = LoginResponse;
 
 // 403 codes for a valid login on an account that cannot be used yet.
 export const accountStatusErrorCodeSchema = z.enum([
