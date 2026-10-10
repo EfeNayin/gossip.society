@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:seed:dev": "tsc -p tsconfig.seed.json && node dist/seed/prisma/seed-dev.js",
-    "db:passwords:dev": "pnpm --filter @gossip/shared build && tsc -p tsconfig.seed.json && node dist/seed/prisma/set-dev-passwords.js"
+    "db:passwords:dev": "pnpm --filter @gossip/shared build && tsc -p tsconfig.seed.json && node dist/seed/prisma/set-dev-passwords.js",
+    "db:subscription:dev": "tsc -p tsconfig.seed.json && node dist/seed/prisma/seed-subscription-dev.js"
   },
   "dependencies": {
     "@gossip/shared": "workspace:*",

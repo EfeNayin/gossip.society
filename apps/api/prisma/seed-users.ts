@@ -34,3 +34,6 @@ export const seedUsers = {
 export const seedUserEmails: string[] = Object.values(seedUsers).map(
   (user) => user.email,
 );
+
+// The example venue the development seed creates (fixed id so re-runs find it).
+export const SEED_VENUE_ID = '00000000-0000-4000-8000-000000000101';
