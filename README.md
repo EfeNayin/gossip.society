@@ -284,6 +284,19 @@ Sahip uç noktaları `ACTIVE` `VENUE_OWNER` ister; ADMIN/INFLUENCER/VENUE_STAFF 
 - **Saat:** yayınlamada "şimdi" **kilit beklemesinden sonra** bir kez okunur; abonelik geçerliliği, ilanın bitişi ve kotadaki "aktif ilan" sayımı aynı güncel zamanı kullanır. Kilidi beklerken aboneliği veya ilanın süresi dolan bir istek eski zamanla kabul edilmez; beklerken süresi dolan bir ilanın boşalttığı kota hakkı kullanılabilir.
 - **Tekrar yayınlama:** aynı ilan için ikinci istek, ilan zaten `PUBLISHED` ise `200` ile ilanı **değişmeden** döndürür (yayın zamanı değişmez) ve ikinci bir kota tüketmez; `SUSPENDED` ilan için `409`.
 
+### Influencer ilan keşfi (`/discover/offers`)
+
+| Uç nokta | Rol | Açıklama |
+|---|---|---|
+| `GET /discover/offers?page&pageSize` | `INFLUENCER` | Şu anda görünür ilanlar, sayfalı (`pageSize` ≤ 50, varsayılan 20). |
+| `GET /discover/offers/:id` | `INFLUENCER` | Tek ilanın ayrıntısı; görünür değilse `404`. |
+
+- **Kim:** yalnızca `ACTIVE` `INFLUENCER` (global guard `ACTIVE` ister). Misafir keşfi yoktur: token olmadan `401`; mekan sahibi, personel ve admin `403`. Yol bilerek `/offers` altında değildir, `/offers/mine` ile çakışmaz. Salt okunurdur.
+- **Görünürlük (tek kural, liste ve detay aynı):** `status = PUBLISHED` **ve** `validFrom <= şimdi < validUntil`. Taslak, askıdaki, henüz başlamamış ve süresi dolmuş ilanlar ne listede ne detayda görünür; "şimdi" istek başına bir kez okunur (başlangıç dahil, bitiş hariç). Listeden sonra askıya alınan veya süresi dolan ilan detayda **hemen** `404` olur; görünmeyen ile hiç olmayan ilan aynı `404`'tür. Aboneliğe bakılmaz: yayındaki ilan süresi bitene kadar görünür.
+- **Sıralama:** `publishedAt` azalan, eşitlikte `id` azalan (kararlı). Canlı bir listeyi sayfalarken ilanlar arada yayınlanır/askıya alınır/biterse sayfa sınırı kayabilir; bu sayfalamanın doğasıdır.
+- **Yanıt (`packages/shared`, `discover.ts`):** liste kartı: `id`, başlık, hizmet, değer (kuruş, integer), beklenen içerik, minimum takipçi, tarihler (UTC), mekan adı, şube adı/şehir. Detay ayrıca: açıklama, **toplam** kontenjan ve şube adresi. Yanıt şemayla ayrıştırılır, listelenmeyen her alan atılır: mekan sahibi e-postası/kimliği, kullanıcı, admin, abonelik/paket, durum geçmişi, mekan ve şube kimlikleri **yoktur**. Başvuru modeli olmadığı için kontenjan "kalan yer" olarak sunulmaz. Yeni model/migration yoktur.
+- **Takipçi şartı:** `minFollowers` yalnızca koşul olarak gösterilir; doğrulanmış Instagram verisi olmadığı için otomatik uygunluk denetimi veya takipçi bilgisi üretilmez.
+
 ### Tekrarlanabilir ilan oluşturma (`Idempotency-Key`)
 
 `POST /offers/mine` isteğe bağlı bir `Idempotency-Key` başlığı kabul eder: istemcinin **bir mantıksal oluşturma denemesi** için uydurduğu, her tekrarda aynen gönderdiği 16–128 karakterlik (`A-Za-z0-9_-`; UUID uygundur) rastgele değer. Başlık yoksa eskisi gibi her istek yeni ilan oluşturur; biçimi bozuk veya tekrarlı başlık `400`'dür (sessizce yok sayılmaz).
@@ -312,7 +325,7 @@ pnpm db:subscription:dev
 
 ## Mobil uygulama girişi
 
-Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile girer ve **API'nin döndürdüğü kullanıcı kaydındaki role göre** sade bir ana ekran açar: `INFLUENCER`, `VENUE_OWNER`, `VENUE_STAFF`. Ekranlarda yalnızca ad, rol ve çıkış vardır (sahte ilan/istatistik/QR yok). `ADMIN` mobilde yetkili alan açmaz: giriş hemen `POST /auth/logout` ile iptal edilir, hiçbir şey saklanmaz ve "yönetim paneli web üzerinden kullanılır" mesajı gösterilir. Gezinti korumaları (`Stack.Protected`) yalnızca arayüzdür; her isteği API kendi yetki kontrolleriyle denetler. Geliştirme hesapları için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `owner@`, `staff@`, `influencer@gossip-society.example` kullanılabilir.
+Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile girer ve **API'nin döndürdüğü kullanıcı kaydındaki role göre** bir ana ekran açar: `INFLUENCER` (ilan keşfi), `VENUE_OWNER` (mekan paneli), `VENUE_STAFF` (sade; yalnızca ad, rol ve çıkış). Sahte ilan/istatistik/QR yoktur. `ADMIN` mobilde yetkili alan açmaz: giriş hemen `POST /auth/logout` ile iptal edilir, hiçbir şey saklanmaz ve "yönetim paneli web üzerinden kullanılır" mesajı gösterilir. Gezinti korumaları (`Stack.Protected`) yalnızca arayüzdür; her isteği API kendi yetki kontrolleriyle denetler. Geliştirme hesapları için `pnpm db:seed:dev` ve `pnpm db:passwords:dev` sonrasında `owner@`, `staff@`, `influencer@gossip-society.example` kullanılabilir.
 
 ### Token'lar nasıl saklanır ve yenilenir
 
@@ -331,7 +344,7 @@ Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile
 - **Durumlar:** yükleniyor, mekan yok, bağlantı hatası (+ **Tekrar Dene**), beklenmeyen yanıt/sunucu hatası, aşağı çekerek yenileme ve arka plandan dönüşte yeniden okuma. Yenileme başarısız olursa, daha önce gösterilen liste yerinde kalır ve altında "Yeniden Dene" çıkar.
 - **Hata türleri ayrı ele alınır:** `401`/süresi dolmuş/iptal edilmiş oturum ve `403` + `ACCOUNT_*` (hesap etkin değil) oturum yöneticisi tarafından oturumu bitirir ve giriş ekranına götürür (bağlantı hatası gibi gösterilmez). Kodsuz `403` (rol politikası) ekranda "erişiminiz değişmiş olabilir" der ve oturum yöneticisine kullanıcının güncel kaydını sordurur; rol değişmişse gezinti yeni rolün ana ekranına geçer. Yenileme sırasında rol değişirse veya hesap `ADMIN` olursa aynı şekilde güncellenir / oturum reddedilip iptal edilir.
 - **Kullanıcı yalıtımı:** sorgu anahtarı kullanıcıya bağlıdır (`['venues','mine',<kullanıcı id>]`); kullanıcı değişince veya çıkışta tüm `['venues']` sorguları iptal edilip silinir. Çıkıştan (veya başka bir girişten) önce başlamış bir isteğin geç yanıtı, `SessionManager.request()` çağrı döndüğünde oturum nesnesini yeniden kontrol ettiği için atılır; ayrıca o an oturum açmış kullanıcı, isteğin yapıldığı kullanıcı değilse yanıt "eski" sayılır. Böylece geç yanıt yeni kullanıcıya görünmez ve önbelleğe yazılmaz.
-- Influencer ve personel ana ekranları değişmemiştir.
+- Personel ana ekranı değişmemiştir; influencer ana ekranı artık ilan keşfidir (aşağıya bakın).
 
 ### Mekan sahibi ilan yönetimi
 
@@ -350,14 +363,25 @@ Tek mobil uygulama (`apps/mobile`, Expo SDK 57 + Expo Router) e-posta/parola ile
 - **Oluşturmada `Idempotency-Key`:** her mantıksal oluşturma denemesi için bir UUID v4 anahtarı üretilir (`idempotency-key.ts`; platformun rastgele kaynağı, yoksa `Math.random` yedeği; anahtar gizli değildir, API onu kullanıcıya bağlar). Form içeriği **aynı** kaldıkça aynı anahtar kullanılır: yanıt kaybından sonra yeniden **Taslak Olarak Kaydet**'e basmak aynı işlemi sürdürür ve tek ilan bırakır. İçerik değişirse (başlık, tutar, tarih, şube…) bu **yeni bir işlem**dir ve yeni anahtar üretilir; yanıtı kaybolan önceki içerik sunucuda oluşmuşsa o ilan ayrı kalır (listede görünür). Başarıdan sonra deneme biter; aynı içerikle yeni bir kayıt bilerek yeni ilan oluşturur. **Otomatik tekrar eklenmemiştir**: yeniden gönderme yalnızca kullanıcı basınca olur. Düzenleme (`PUT`) ve yayınlama (`POST …/publish`) zaten aynı isteği tekrarlamaya dayanıklıdır (aynı gövde aynı sonucu verir; ikinci yayın ilanı değiştirmeden döner), bu yüzden anahtar kullanmazlar.
 - **Oturum ve kullanıcı yalıtımı:** her çağrı `SessionManager.request()` üzerindendir (ayrı yenileme mantığı yoktur); sorgu anahtarları `['offers','mine',<kullanıcı id>,…]`; kullanıcı değişince veya çıkışta `['offers']` (ve `['venues']`) sorguları iptal edilip silinir. Çıkıştan/başka girişten sonra gelen eski liste, detay, oluşturma, düzenleme ve yayın yanıtları atılır; yeni kullanıcının önbelleğine yazılmaz ve gezintiyi değiştirmez (oluşturma sonrası ilana gitme, ekran hâlâ açıksa yapılır). `401` / oturum sonu / hesap durumu mevcut oturum akışına bırakılır; kodsuz `403` kullanıcı kaydını yeniden sorgulatır, rol değiştiyse gezinti yeni role geçer.
 
+### Influencer ilan keşfi (mobil)
+
+`INFLUENCER` ana ekranı (`apps/mobile/src/discover`, rotalar `src/app/influencer.tsx` ve `src/app/discover/[id].tsx`) gerçek API'den (`GET /discover/offers`) **şu anda geçerli yayınlanmış ilanları** listeler; karta basınca ayrıntı açılır, geri tuşu listeye döner. **Salt okunurdur: başvuru yok, "Başvur" düğmesi yok** ("Başvuru işlemi henüz uygulamada yok." yazar).
+
+- **Görsel yön:** `prototype/` içindeki influencer paneli başlığı ("INFLUENCER PANELİ") ve tek `renderInfHome` içindeki fırsat kartı hiyerarşisi (mekan adı → mekanın teklifi → vurgu renginde beklenen içerik → koşullar) mevcut koyu tema, pembe vurgu ve kart bileşenleriyle yeniden yapıldı; kod kopyalanmadı. Prototipte ayrı bir ilan detayı yoktur, detay mevcut kart/ayrıntı bileşenleriyle tasarlandı. Fotoğraf, puan, VIP ve doğrulama rozeti **yoktur**: arkasında veri yok.
+- **Detay:** mekan/şube/şehir/adres, açıklama, hizmet ve değeri, beklenen içerik, **takipçi şartı** (otomatik denetlenmez notuyla), **toplam** kontenjan ve Türkiye saatiyle geçerlilik. TL ve tarih gösterimi sahip ekranlarındaki yardımcıları kullanır (`formatKurusAsTl`, `formatIstanbul`).
+- **Durumlar:** yükleniyor, boş liste ("Şu anda açık ilan yok"), bağlantı hatası ve beklenmeyen hata + **Tekrar Dene**, sayfalama (**Daha Fazla Göster**, sayfa başına 10), aşağı çekerek yenileme, arka plandan dönüşte yeniden okuma ve detaydan dönüşte eskimiş (15 sn) listenin yeniden okunması. Yenileme başarısız olursa eski liste yerinde kalır, altında **Yeniden Dene** çıkar.
+- **Detay her açılışta API'den doğrulanır:** önbellek süresi yoktur ve listeden yer tutucu veri aktarılmaz. Listede görünen ama bu arada askıya alınan/süresi dolan ilan "Bu ilan artık yayında değil" der, eski içerik gösterilmez ve liste yenilenir. Bir yenileme "görünmüyor" derse daha önce yüklenen veri geçerliymiş gibi gösterilmez.
+- **Oturum ve yalıtım:** çağrılar `SessionManager.request()` üzerindendir (`401`, hesap durumu ve oturum sonu mevcut akışla); sorgu anahtarları `['discover','offers',<kullanıcı id>,…]`, kullanıcı değişince/çıkışta `['discover']` sorguları iptal edilip silinir, sorgular yalnızca `INFLUENCER` rolünde çalışır. Çıkıştan/başka girişten sonra gelen eski liste ve detay yanıtları atılır; gezintiyi değiştirmez. Kodsuz `403` (rol değişti) kullanıcı kaydını yeniden sorgulatır ve gezinti yeni rolün ana ekranına geçer. Mekan sahibi, personel ve admin akışları değişmemiştir.
+
 ### Sınırlamalar
 
 - **Native güvenli depolama ve "uygulamayı kapatıp yeniden açma" bu ortamda doğrulanmadı** (iOS simülatörü ve Android SDK/emülatörü yoktu); native paketlerin yalnızca derlendiği (`expo export`) görüldü. Gerçek cihazda/simülatörde şunlar elle denenmelidir: giriş → uygulamayı tamamen kapat → aç (oturum sürmeli), Keychain/Keystore'a yazılması, çıkış sonrası kayıt silinmesi. Tarayıcı önizlemesi native cihaz testi yerine geçmez.
 - iOS Keychain kayıtları uygulama silinip aynı bundle ID ile yeniden kurulunca kalabilir (iOS davranışı); eski oturum API tarafından geçersizse ilk açılışta giriş ekranına düşülür.
 - Yenilenen token çifti güvenli depoya yazılamazsa (nadir) oturum o çalışma boyunca bellekte sürer, bir sonraki açılışta eski (kullanılmış) refresh token reddedilir ve yeniden giriş gerekir.
-- **İlan ekranları yalnızca tarayıcı önizlemesinde (Expo web, gerçek API) denendi; native iOS/Android cihazda veya simülatörde denenmedi.** Klavye türleri (`decimal-pad`, `number-pad`), çok satırlı alan davranışı ve kaydırma native'de ayrıca elle denenmelidir.
+- **İlan keşfi ve ilan ekranları yalnızca tarayıcı önizlemesinde (Expo web, gerçek API) denendi; native iOS/Android cihazda veya simülatörde denenmedi.** Klavye türleri (`decimal-pad`, `number-pad`), çok satırlı alan davranışı ve kaydırma native'de ayrıca elle denenmelidir.
 - **Kalan kota/abonelik durumu gösterilmez:** API'de bunu veren bir uç nokta yok (`GET /offers/mine` yalnızca ilanları döner); kota/abonelik ancak yayınlama denemesinde `409` koduyla öğrenilir. Ekranda sahte bir kota göstergesi yoktur. İstenirse API'ye ayrı bir salt okunur uç nokta eklenmelidir.
 - **Yinelenen kayıt (giderildi):** tarayıcı ağ katmanı, yeniden kullanılan bir bağlantı sıfırlanınca `POST`'u kendisi tekrar gönderebilir; önizlemede kasıtlı kesilen bir yanıtta Chrome isteği tekrar gönderdi ve eskiden iki ilan oluştu. `Idempotency-Key` ile aynı senaryoda sunucu iki istek görür ama **tek ilan** kalır (gerçek Chrome + gerçek API ile doğrulandı). Korunma yalnızca oluşturma içindir ve 24 saatle sınırlıdır: farklı içerikle (yeni anahtar) yapılan ikinci kayıt, anahtarsız eski istemciler ve süresi dolmuş anahtarlar korunmaz.
+- Keşifte başvuru, ziyaret saati, QR, Instagram doğrulaması, harita, filtre ve öneri yoktur; görsel (fotoğraf) alanı ilan modelinde yoktur.
 - Süresi dolan yayınlar için sunucuda durum değişmez; "Süresi doldu" yalnızca görünümdür.
 - Mobil için otomatik arayüz testi yoktur; oturum mantığı Vitest ile test edilir (`pnpm --filter mobile test`), ekranlar tarayıcı önizlemesinde elle doğrulanmıştır.
 
