@@ -45,6 +45,7 @@ model User {
   influencerProfile InfluencerProfile?
   ownedVenues       Venue[]
   venueStaff        VenueStaff[]
+  authSessions      AuthSession[]
 }
 
 model InfluencerProfile {
@@ -98,4 +99,39 @@ model VenueStaff {
 
   @@unique([userId, branchId])
   @@index([branchId])
+}
+
+// One row per successful login. The absolute expiry is fixed at creation and
+// never extended by refreshing. revokedAt is set by logout, refresh-token
+// reuse detection, or a refresh by an account that is no longer ACTIVE.
+model AuthSession {
+  id              String         @id @default(uuid()) @db.Uuid
+  userId          String         @db.Uuid
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime       @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  // Written on every refresh. The conditional UPDATE also locks the session
+  // row, which serializes refresh against logout and against other refreshes.
+  lastRefreshedAt DateTime?
+  refreshTokens   RefreshToken[]
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Only the SHA-256 hash of the opaque token is stored. A token is consumed
+// (usedAt) when exchanged; consumed rows are kept until the session is deleted
+// so that presenting an old token again is detected as reuse. The migration
+// adds a partial unique index (hand-written, Prisma can't express it) allowing
+// at most one unused token per session.
+model RefreshToken {
+  id        String      @id @default(uuid()) @db.Uuid
+  sessionId String      @db.Uuid
+  session   AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tokenHash String      @unique
+  createdAt DateTime    @default(now())
+  usedAt    DateTime?
+
+  @@index([sessionId])
 }
