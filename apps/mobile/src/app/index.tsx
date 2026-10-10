@@ -1,39 +1,23 @@
-import { healthResponseSchema } from '@gossip/shared';
-import { useQuery } from '@tanstack/react-query';
-import { StyleSheet, Text, View } from 'react-native';
+import { Redirect } from 'expo-router';
+import { routes } from '@/routes';
+import { useSession } from '@/session/use-session';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000';
-
-async function fetchHealth() {
-  const response = await fetch(`${API_URL}/health`);
-  return healthResponseSchema.parse(await response.json());
-}
-
+// Sends the visitor to the right screen for the session state. While the
+// stored session is being checked the splash screen is still showing.
 export default function Index() {
-  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth });
+  const { status, user } = useSession();
 
-  return (
-    <View style={styles.container}>
-      {health.isPending && <Text>API durumu kontrol ediliyor…</Text>}
-      {health.isError && <Text style={styles.error}>API&apos;ye ulaşılamıyor.</Text>}
-      {health.data && (
-        <>
-          <Text>API: {health.data.status === 'ok' ? 'çalışıyor' : 'hata'}</Text>
-          <Text>Veritabanı: {health.data.db === 'up' ? 'bağlı' : 'bağlı değil'}</Text>
-        </>
-      )}
-    </View>
-  );
+  if (status === 'loading') return null;
+  if (status === 'unavailable') return <Redirect href={routes.unavailable} />;
+  if (status === 'signedIn' && user) {
+    switch (user.role) {
+      case 'INFLUENCER':
+        return <Redirect href={routes.influencer} />;
+      case 'VENUE_OWNER':
+        return <Redirect href={routes.venueOwner} />;
+      case 'VENUE_STAFF':
+        return <Redirect href={routes.staff} />;
+    }
+  }
+  return <Redirect href={routes.login} />;
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  error: {
-    color: '#dc2626',
-  },
-});

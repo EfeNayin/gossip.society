@@ -57,6 +57,7 @@ export class SessionManager {
   private validating: Promise<void> | null = null;
   private loggingIn: Promise<LoginResult> | null = null;
   private lastValidatedAt = 0;
+  private starting: Promise<void> | null = null;
 
   constructor(
     private readonly deps: {
@@ -112,8 +113,12 @@ export class SessionManager {
 
   // --- start-up and validation ---------------------------------------------
 
-  /** Loads a stored session (if any) and checks it with the API. */
-  async start(): Promise<void> {
+  /** Loads a stored session (if any) and checks it with the API. Runs once. */
+  start(): Promise<void> {
+    return (this.starting ??= this.doStart());
+  }
+
+  private async doStart(): Promise<void> {
     const gen = this.generation;
     const stored = await this.deps.storage.load().catch(() => null);
     if (gen !== this.generation) return; // a login happened while loading

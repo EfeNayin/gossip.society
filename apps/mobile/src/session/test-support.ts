@@ -201,7 +201,7 @@ export class FakeApi implements AuthApi {
 /** In-memory TokenStorage that records what was written and can be slowed down or broken. */
 export class MemoryStorage implements TokenStorage {
   value: StoredSession | null = null;
-  log: Array<'save' | 'clear'> = [];
+  log: ('save' | 'clear')[] = [];
   saveDelayMs = 0;
   failSaves = false;
 
